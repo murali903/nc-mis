@@ -7,6 +7,25 @@
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <!-- No Babel needed - using React.createElement directly -->
+    <!-- Supabase Client -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        // ============================================================
+        // SUPABASE CONFIGURATION - Replace these with your values
+        // ============================================================
+        const SUPABASE_URL = 'https://ttnmuhhikupimebvvrhc.supabase.co';  // <-- Replace with your Project URL from Part 3
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR0bm11aGhpa3VwaW1lYnZ2cmhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4OTYyMTUsImV4cCI6MjEwNDQ3MjIxNX0.ojelg9vQHiiauY3bBR9QBIgFhM8pqOuKXNHdOLMvajs';     // <-- Replace with your anon key from Part 3
+        
+        // Create the Supabase client
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        
+        // Make it available globally
+        window.SUPABASE_CLIENT = supabase;
+        window.SUPABASE_READY = true;
+        console.log('Supabase connected to:', SUPABASE_URL);
+        // ============================================================
+    </script>
+
 
     <style>
         * {
