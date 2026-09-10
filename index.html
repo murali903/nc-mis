@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,26 +7,8 @@
     <title>IndentFlow - Material Management System</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <!-- No Babel needed - using React.createElement directly -->
-    <!-- Supabase Client -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script>
-        // ============================================================
-        // SUPABASE CONFIGURATION - Replace these with your values
-        // ============================================================
-        const SUPABASE_URL = 'https://ttnmuhhikupimebvvrhc.supabase.co';  // <-- Replace with your Project URL from Part 3
-        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR0bm11aGhpa3VwaW1lYnZ2cmhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4OTYyMTUsImV4cCI6MjEwNDQ3MjIxNX0.ojelg9vQHiiauY3bBR9QBIgFhM8pqOuKXNHdOLMvajs';     // <-- Replace with your anon key from Part 3
-        
-        // Create the Supabase client
-        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-        
-        // Make it available globally
-        window.SUPABASE_CLIENT = supabase;
-        window.SUPABASE_READY = true;
-        console.log('Supabase connected to:', SUPABASE_URL);
-        // ============================================================
-    </script>
-
+    <!-- No Babel needed - using React.createElement directly -->
 
     <style>
         * {
@@ -259,6 +242,70 @@
             flex: 1;
             overflow-y: auto;
             padding: 24px;
+        }
+
+        /* Loading Screen */
+        .loading-screen {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+            flex-direction: column;
+            color: white;
+        }
+
+        .loading-spinner {
+            width: 48px;
+            height: 48px;
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 24px;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .offline-banner {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background-color: #ef4444;
+            color: white;
+            text-align: center;
+            padding: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            z-index: 10000;
+        }
+
+        .login-error {
+            background-color: #fee2e2;
+            color: #991b1b;
+            padding: 10px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            margin-bottom: 16px;
+            border: 1px solid #fecaca;
+        }
+
+        .forgot-password-link {
+            display: block;
+            text-align: center;
+            margin-top: 12px;
+            font-size: 13px;
+            color: #2563eb;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+
+        .forgot-password-link:hover {
+            color: #1d4ed8;
         }
 
         /* Login Page */
@@ -945,461 +992,1241 @@
 
     <script type="text/javascript">
 
-// IndentFlow v3 - Complete Application
-const { useState, useReducer, useContext, createContext, useEffect, useCallback, useMemo, useRef } = React;
+// IndentFlow v3 - Production Application (Supabase-backed)
+
+// ============ SUPABASE CONFIG ============
+// IMPORTANT: Replace these with your Supabase project values
+var SUPABASE_URL = 'https://ttnmuhhikupimebvvrhc.supabase.co';
+var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR0bm11aGhpa3VwaW1lYnZ2cmhjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4OTYyMTUsImV4cCI6MjEwNDQ3MjIxNX0.ojelg9vQHiiauY3bBR9QBIgFhM8pqOuKXNHdOLMvajs';
+var supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+var { useState, useReducer, useContext, createContext, useEffect, useCallback, useMemo, useRef } = React;
 
 
 // ============================================================================
-// MOCK DATA
+// DATA LAYER (Supabase-backed)
 // ============================================================================
 
-const INITIAL_USERS = [
-    { id: 'admin-001', name: 'Admin User', email: 'admin@indentflow.test', role: 'admin' },
-    { id: 'eng-001', name: 'Rahul Sharma', email: 'engineer@indentflow.test', role: 'site_engineer' },
-    { id: 'pm-001', name: 'Priya Mehta', email: 'pm@indentflow.test', role: 'project_manager' },
-    { id: 'md-001', name: 'Vikram Singh', email: 'md@indentflow.test', role: 'md' },
-    { id: 'proc-001', name: 'Deepa Nair', email: 'procmgr@indentflow.test', role: 'procurement_manager' },
-    { id: 'clerk-001', name: 'Suresh Patel', email: 'clerk@indentflow.test', role: 'procurement_clerk' },
-    { id: 'store-001', name: 'Amit Kumar', email: 'storekeeper@indentflow.test', role: 'storekeeper' },
-];
+// Helper: convert snake_case DB rows to camelCase app state
+function snakeToCamel(str) {
+    return str.replace(/_([a-z])/g, function(m, p1) { return p1.toUpperCase(); });
+}
 
-const INITIAL_SITES = [
-    { id: 'site-001', name: 'Alpha', location: 'Hyderabad', officeId: 'OFF-001' },
-    { id: 'site-002', name: 'Beta', location: 'Secunderabad', officeId: 'OFF-001' },
-    { id: 'site-003', name: 'Gamma', location: 'Nizamabad', officeId: 'OFF-002' },
-];
+function transformRow(row) {
+    if (!row || typeof row !== 'object') return row;
+    if (Array.isArray(row)) return row.map(function(r) { return transformRow(r); });
+    var result = {};
+    var keys = Object.keys(row);
+    for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        var camelKey = snakeToCamel(key);
+        var val = row[key];
+        // Don't recurse into nested arrays/objects that are already transformed by Supabase joins
+        if (Array.isArray(val)) {
+            result[camelKey] = val.map(function(item) {
+                return typeof item === 'object' && item !== null ? transformRow(item) : item;
+            });
+        } else if (val && typeof val === 'object' && !(val instanceof Date)) {
+            result[camelKey] = transformRow(val);
+        } else {
+            result[camelKey] = val;
+        }
+    }
+    return result;
+}
 
-const INITIAL_SITE_ASSIGNMENTS = {
-    'eng-001': ['site-001', 'site-002'],
-    'pm-001': ['site-001', 'site-002'],
-    'store-001': ['site-001'],
-    'admin-001': ['site-001', 'site-002', 'site-003'],
-    'md-001': ['site-001', 'site-002', 'site-003'],
-    'proc-001': ['site-001', 'site-002', 'site-003'],
-    'clerk-001': ['site-001', 'site-002', 'site-003'],
-};
+function transformProfile(row) {
+    return {
+        id: row.id,
+        name: row.full_name || row.name || '',
+        email: row.email || '',
+        role: row.role || 'site_engineer',
+        phone: row.phone || '',
+    };
+}
 
-const INITIAL_VENDORS = [
-    {
-        id: 'vendor-001',
-        name: 'Ultratech Cement Dealer - Raju Enterprises',
-        contactPerson: 'Raju Naidu',
-        phone: '9876543210',
-        email: 'raju.enterprises@gmail.com',
-        gstin: '36AABCR1234F1Z5',
-        pan: 'AABCR1234F',
-        address: '12-5-149, Plot No. 8, Industrial Estate, Balanagar',
-        city: 'Hyderabad',
-        state: 'Telangana',
-        pincode: '500037',
-        bankAccount: '1234567890123456',
-        bankName: 'State Bank of India',
-        ifsc: 'SBIN0001234',
-        defaultPaymentTerms: 30,
-        category: 'Cement',
-        notes: 'Authorized Ultratech dealer for Telangana region. Bulk discount available for orders above 500 bags.'
-    },
-    {
-        id: 'vendor-002',
-        name: 'Vizag Steel Distributors',
-        contactPerson: 'Ramesh Agarwal',
-        phone: '9876543211',
-        email: 'vizagsteel.dist@yahoo.com',
-        gstin: '36AADCV5678G2Z8',
-        pan: 'AADCV5678G',
-        address: '45, Steel Market, Bowenpally',
-        city: 'Secunderabad',
-        state: 'Telangana',
-        pincode: '500011',
-        bankAccount: '9876543210987654',
-        bankName: 'HDFC Bank',
-        ifsc: 'HDFC0002345',
-        defaultPaymentTerms: 21,
-        category: 'Steel',
-        notes: 'Supplies Vizag Steel and SAIL TMT bars. Provides mill test certificates with every consignment.'
-    },
-    {
-        id: 'vendor-003',
-        name: 'Srinivasa Electricals',
-        contactPerson: 'Venkat Rao',
-        phone: '9876543212',
-        email: 'srinivasaelec@gmail.com',
-        gstin: '36AAFCS9012H3Z1',
-        pan: 'AAFCS9012H',
-        address: '78, General Bazaar, Secunderabad',
-        city: 'Hyderabad',
-        state: 'Telangana',
-        pincode: '500003',
-        bankAccount: '5678901234567890',
-        bankName: 'ICICI Bank',
-        ifsc: 'ICIC0003456',
-        defaultPaymentTerms: 15,
-        category: 'Electrical',
-        notes: 'Deals in Polycab, Havells, and Finolex wires and cables. Also stocks Anchor and Legrand switches.'
-    },
-    {
-        id: 'vendor-004',
-        name: 'Lakshmi Plumbing Supplies',
-        contactPerson: 'Subramaniam K',
-        phone: '9876543213',
-        email: 'lakshmi.plumbing@rediffmail.com',
-        gstin: '36AADFL3456J4Z6',
-        pan: 'AADFL3456J',
-        address: '23, Ashok Nagar Main Road',
-        city: 'Nizamabad',
-        state: 'Telangana',
-        pincode: '503001',
-        bankAccount: '3456789012345678',
-        bankName: 'Bank of Baroda',
-        ifsc: 'BARB0NIZAMA',
-        defaultPaymentTerms: 30,
-        category: 'Plumbing',
-        notes: 'Stocks Ashirvad CPVC, Supreme PVC, and Jaquar CP fittings. Free delivery within Nizamabad district.'
-    },
-    {
-        id: 'vendor-005',
-        name: 'Deccan Building Materials',
-        contactPerson: 'Mohammad Aziz',
-        phone: '9876543214',
-        email: 'deccan.bldg.mat@gmail.com',
-        gstin: '36AABCD7890K5Z9',
-        pan: 'AABCD7890K',
-        address: '156, Nampally Station Road, Abids',
-        city: 'Hyderabad',
-        state: 'Telangana',
-        pincode: '500001',
-        bankAccount: '7890123456789012',
-        bankName: 'Canara Bank',
-        ifsc: 'CNRB0004567',
-        defaultPaymentTerms: 45,
-        category: 'General',
-        notes: 'Multi-category supplier. Stocks cement, plywood, chemicals, hardware, and finishing materials. Competitive rates on bulk orders.'
-    },
-    {
-        id: 'vendor-006',
-        name: 'KCP Sand & Aggregates',
-        contactPerson: 'Narasimha Reddy',
-        phone: '9876543215',
-        email: 'kcp.sandagg@outlook.com',
-        gstin: '36AABCK2345L6Z2',
-        pan: 'AABCK2345L',
-        address: 'Survey No. 45, Shamirpet Road, Medchal',
-        city: 'Secunderabad',
-        state: 'Telangana',
-        pincode: '501401',
-        bankAccount: '2345678901234567',
-        bankName: 'Union Bank of India',
-        ifsc: 'UBIN0005678',
-        defaultPaymentTerms: 7,
-        category: 'Aggregates',
-        notes: 'Operates quarry and sand depot. Supplies river sand, M sand, 20mm and 40mm crushed stone. Own fleet of tippers for delivery.'
-    },
-];
+function transformSite(row) {
+    return {
+        id: row.id,
+        name: row.name,
+        location: row.location || '',
+        officeId: row.office_id || '',
+    };
+}
 
-// ============================================================================
-// EXPANDED BOQ LISTS (with HSN codes, different subsets per site)
-// ============================================================================
+function transformVendor(row) {
+    return {
+        id: row.id,
+        name: row.name || '',
+        contactPerson: row.contact_person || '',
+        phone: row.phone || '',
+        email: row.email || '',
+        gstin: row.gstin || '',
+        pan: row.pan || '',
+        address: row.address || '',
+        city: row.city || '',
+        state: row.state || '',
+        pincode: row.pincode || '',
+        bankAccount: row.bank_account || '',
+        bankName: row.bank_name || '',
+        ifsc: row.ifsc || '',
+        defaultPaymentTerms: row.default_payment_terms || 30,
+        category: row.category || '',
+        notes: row.notes || '',
+    };
+}
 
-const INITIAL_BOQ_LISTS = {
-    'site-001': [
-        // Cement
-        { id: 'boq-a1', name: 'OPC 53 Grade Cement', unit: 'bags', category: 'Cement', hsn: '2523' },
-        { id: 'boq-a2', name: 'OPC 43 Grade Cement', unit: 'bags', category: 'Cement', hsn: '2523' },
-        { id: 'boq-a3', name: 'PPC Cement', unit: 'bags', category: 'Cement', hsn: '2523' },
-        // Steel
-        { id: 'boq-a4', name: 'TMT Steel 8mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-a5', name: 'TMT Steel 12mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-a6', name: 'TMT Steel 16mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-a7', name: 'TMT Steel 20mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-a8', name: 'TMT Steel 25mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-a9', name: 'Binding Wire 18 gauge', unit: 'kg', category: 'Steel', hsn: '7217' },
-        // Aggregates
-        { id: 'boq-a10', name: 'River Sand', unit: 'cum', category: 'Aggregates', hsn: '2505' },
-        { id: 'boq-a11', name: '20mm Coarse Aggregate', unit: 'cum', category: 'Aggregates', hsn: '2517' },
-        { id: 'boq-a12', name: '40mm Coarse Aggregate', unit: 'cum', category: 'Aggregates', hsn: '2517' },
-        { id: 'boq-a13', name: 'Stone Dust', unit: 'cum', category: 'Aggregates', hsn: '2517' },
-        // Concrete
-        { id: 'boq-a14', name: 'Ready Mix Concrete M20', unit: 'cum', category: 'Concrete', hsn: '3824' },
-        { id: 'boq-a15', name: 'Ready Mix Concrete M25', unit: 'cum', category: 'Concrete', hsn: '3824' },
-        { id: 'boq-a16', name: 'Ready Mix Concrete M30', unit: 'cum', category: 'Concrete', hsn: '3824' },
-        // Masonry
-        { id: 'boq-a17', name: 'Bricks (Class A)', unit: 'nos', category: 'Masonry', hsn: '6901' },
-        { id: 'boq-a18', name: 'Fly Ash Bricks', unit: 'nos', category: 'Masonry', hsn: '6815' },
-        // Chemicals
-        { id: 'boq-a19', name: 'Waterproofing Compound', unit: 'litres', category: 'Chemicals', hsn: '3214' },
-        { id: 'boq-a20', name: 'Curing Compound', unit: 'litres', category: 'Chemicals', hsn: '3824' },
-        { id: 'boq-a21', name: 'Concrete Admixture (Plasticiser)', unit: 'litres', category: 'Chemicals', hsn: '3824' },
-        // Formwork
-        { id: 'boq-a22', name: 'Shuttering Plywood 19mm', unit: 'sheets', category: 'Formwork', hsn: '4412' },
-        { id: 'boq-a23', name: 'Acrow Props (Adjustable)', unit: 'nos', category: 'Formwork', hsn: '7308' },
-        // Safety
-        { id: 'boq-a24', name: 'Safety Helmets ISI', unit: 'nos', category: 'Safety', hsn: '6506' },
-        { id: 'boq-a25', name: 'Safety Gloves (Rubber)', unit: 'pairs', category: 'Safety', hsn: '4015' },
-        { id: 'boq-a26', name: 'Safety Boots', unit: 'pairs', category: 'Safety', hsn: '6402' },
-        // Finishing
-        { id: 'boq-a27', name: 'Wall Putty (White Cement Based)', unit: 'bags', category: 'Finishing', hsn: '3214' },
-        { id: 'boq-a28', name: 'Exterior Primer', unit: 'litres', category: 'Finishing', hsn: '3208' },
-    ],
-    'site-002': [
-        // Cement
-        { id: 'boq-b1', name: 'OPC 53 Grade Cement', unit: 'bags', category: 'Cement', hsn: '2523' },
-        { id: 'boq-b2', name: 'White Cement', unit: 'bags', category: 'Cement', hsn: '2523' },
-        // Steel
-        { id: 'boq-b3', name: 'TMT Steel 10mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-b4', name: 'TMT Steel 12mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-b5', name: 'TMT Steel 16mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-b6', name: 'Binding Wire 18 gauge', unit: 'kg', category: 'Steel', hsn: '7217' },
-        // Aggregates
-        { id: 'boq-b7', name: 'M Sand (Manufactured Sand)', unit: 'cum', category: 'Aggregates', hsn: '2517' },
-        { id: 'boq-b8', name: '20mm Coarse Aggregate', unit: 'cum', category: 'Aggregates', hsn: '2517' },
-        { id: 'boq-b9', name: 'Stone Dust', unit: 'cum', category: 'Aggregates', hsn: '2517' },
-        // Concrete
-        { id: 'boq-b10', name: 'Ready Mix Concrete M15', unit: 'cum', category: 'Concrete', hsn: '3824' },
-        { id: 'boq-b11', name: 'Ready Mix Concrete M20', unit: 'cum', category: 'Concrete', hsn: '3824' },
-        // Masonry
-        { id: 'boq-b12', name: 'AAC Blocks (600x200x150)', unit: 'nos', category: 'Masonry', hsn: '6810' },
-        { id: 'boq-b13', name: 'Fly Ash Bricks', unit: 'nos', category: 'Masonry', hsn: '6815' },
-        // Plumbing
-        { id: 'boq-b14', name: 'CPVC Pipes 1 inch', unit: 'm', category: 'Plumbing', hsn: '3917' },
-        { id: 'boq-b15', name: 'PVC Pipes 4 inch (SWR)', unit: 'm', category: 'Plumbing', hsn: '3917' },
-        { id: 'boq-b16', name: 'GI Pipes 1.5 inch', unit: 'm', category: 'Plumbing', hsn: '7306' },
-        { id: 'boq-b17', name: 'Ball Valves 1 inch (Brass)', unit: 'nos', category: 'Plumbing', hsn: '8481' },
-        { id: 'boq-b18', name: 'CP Fittings - Pillar Cock', unit: 'nos', category: 'Plumbing', hsn: '8481' },
-        // Electrical
-        { id: 'boq-b19', name: 'PVC Conduit 25mm', unit: 'nos', category: 'Electrical', hsn: '3917' },
-        { id: 'boq-b20', name: 'FR Wire 1.5 sq mm (Polycab)', unit: 'm', category: 'Electrical', hsn: '8544' },
-        { id: 'boq-b21', name: 'Junction Boxes (PVC)', unit: 'nos', category: 'Electrical', hsn: '8538' },
-        { id: 'boq-b22', name: 'Modular Switches (6A)', unit: 'nos', category: 'Electrical', hsn: '8536' },
-        { id: 'boq-b23', name: 'MCB 32A Single Pole', unit: 'nos', category: 'Electrical', hsn: '8536' },
-        // Chemicals
-        { id: 'boq-b24', name: 'Epoxy Primer (Floor)', unit: 'litres', category: 'Chemicals', hsn: '3208' },
-        { id: 'boq-b25', name: 'Concrete Admixture (Superplasticiser)', unit: 'litres', category: 'Chemicals', hsn: '3824' },
-        // Finishing
-        { id: 'boq-b26', name: 'Ceramic Floor Tiles 600x600', unit: 'm2', category: 'Finishing', hsn: '6908' },
-        { id: 'boq-b27', name: 'Tile Adhesive', unit: 'bags', category: 'Finishing', hsn: '3214' },
-        { id: 'boq-b28', name: 'Interior Emulsion Paint', unit: 'litres', category: 'Finishing', hsn: '3209' },
-        // Safety
-        { id: 'boq-b29', name: 'Safety Nets (Fall Protection)', unit: 'm2', category: 'Safety', hsn: '5608' },
-        { id: 'boq-b30', name: 'Barricade Tape (Warning)', unit: 'nos', category: 'Safety', hsn: '3919' },
-    ],
-    'site-003': [
-        // Cement
-        { id: 'boq-c1', name: 'OPC 43 Grade Cement', unit: 'bags', category: 'Cement', hsn: '2523' },
-        { id: 'boq-c2', name: 'PPC Cement', unit: 'bags', category: 'Cement', hsn: '2523' },
-        // Steel
-        { id: 'boq-c3', name: 'TMT Steel 8mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-c4', name: 'TMT Steel 10mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-c5', name: 'TMT Steel 16mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-c6', name: 'TMT Steel 20mm', unit: 'kg', category: 'Steel', hsn: '7214' },
-        { id: 'boq-c7', name: 'Binding Wire 18 gauge', unit: 'kg', category: 'Steel', hsn: '7217' },
-        // Aggregates
-        { id: 'boq-c8', name: 'River Sand (Coarse)', unit: 'cum', category: 'Aggregates', hsn: '2505' },
-        { id: 'boq-c9', name: 'M Sand (Manufactured Sand)', unit: 'cum', category: 'Aggregates', hsn: '2517' },
-        { id: 'boq-c10', name: '20mm Coarse Aggregate', unit: 'cum', category: 'Aggregates', hsn: '2517' },
-        { id: 'boq-c11', name: '40mm Coarse Aggregate', unit: 'cum', category: 'Aggregates', hsn: '2517' },
-        // Concrete
-        { id: 'boq-c12', name: 'Ready Mix Concrete M20', unit: 'cum', category: 'Concrete', hsn: '3824' },
-        { id: 'boq-c13', name: 'Ready Mix Concrete M25', unit: 'cum', category: 'Concrete', hsn: '3824' },
-        // Masonry
-        { id: 'boq-c14', name: 'Bricks (Class A)', unit: 'nos', category: 'Masonry', hsn: '6901' },
-        { id: 'boq-c15', name: 'AAC Blocks (600x200x200)', unit: 'nos', category: 'Masonry', hsn: '6810' },
-        // Plumbing
-        { id: 'boq-c16', name: 'CPVC Pipes 0.5 inch', unit: 'm', category: 'Plumbing', hsn: '3917' },
-        { id: 'boq-c17', name: 'PVC Pipes 6 inch (SWR)', unit: 'm', category: 'Plumbing', hsn: '3917' },
-        // Electrical
-        { id: 'boq-c18', name: 'PVC Conduit 20mm', unit: 'nos', category: 'Electrical', hsn: '3917' },
-        { id: 'boq-c19', name: 'FR Wire 2.5 sq mm (Havells)', unit: 'm', category: 'Electrical', hsn: '8544' },
-        { id: 'boq-c20', name: 'MCB 16A Single Pole', unit: 'nos', category: 'Electrical', hsn: '8536' },
-        // Formwork
-        { id: 'boq-c21', name: 'Shuttering Plywood 12mm', unit: 'sheets', category: 'Formwork', hsn: '4412' },
-        { id: 'boq-c22', name: 'Scaffolding Pipes (Tubular)', unit: 'nos', category: 'Formwork', hsn: '7308' },
-        { id: 'boq-c23', name: 'Acrow Props (Adjustable)', unit: 'nos', category: 'Formwork', hsn: '7308' },
-        // Safety
-        { id: 'boq-c24', name: 'Safety Helmets ISI', unit: 'nos', category: 'Safety', hsn: '6506' },
-        { id: 'boq-c25', name: 'Safety Harness (Full Body)', unit: 'nos', category: 'Safety', hsn: '6307' },
-        { id: 'boq-c26', name: 'Barricade Stands (Metal)', unit: 'nos', category: 'Safety', hsn: '7326' },
-        // Finishing
-        { id: 'boq-c27', name: 'Wall Putty (White Cement Based)', unit: 'bags', category: 'Finishing', hsn: '3214' },
-        { id: 'boq-c28', name: 'Exterior Acrylic Paint', unit: 'litres', category: 'Finishing', hsn: '3209' },
-        // Chemicals
-        { id: 'boq-c29', name: 'Waterproofing Membrane (Sheet)', unit: 'm2', category: 'Chemicals', hsn: '3921' },
-        { id: 'boq-c30', name: 'Curing Compound', unit: 'litres', category: 'Chemicals', hsn: '3824' },
-    ],
-};
+function transformIndent(row) {
+    var indent = {
+        id: row.id,
+        siteId: row.site_id,
+        createdBy: row.created_by,
+        createdAt: row.created_at,
+        status: row.status,
+        priority: row.priority || 'normal',
+        assignedTo: row.assigned_to || undefined,
+        submittedAt: row.submitted_at || undefined,
+        rejectionReason: row.rejection_reason || undefined,
+        returnReason: row.return_reason || undefined,
+        escalationRemarks: row.escalation_remarks || undefined,
+        mdRemarks: row.md_remarks || undefined,
+        mdEscalationResult: row.md_escalation_result || undefined,
+        linkedPO: row.linked_po || undefined,
+        externalPO: row.external_po || undefined,
+        isRevised: row.is_revised || undefined,
+        revisionCount: row.revision_count || 0,
+        description: row.description || '',
+        notes: row.notes || '',
+        lineItems: (row.indent_line_items || []).map(function(li) {
+            return {
+                id: li.id,
+                description: li.description,
+                qty: li.qty || li.quantity || 0,
+                unit: li.unit || '',
+                received: li.received || 0,
+                isBoq: li.is_boq !== undefined ? li.is_boq : true,
+                nonBoqReason: li.non_boq_reason || undefined,
+            };
+        }),
+        comments: (row.indent_comments || []).map(function(c) {
+            return {
+                id: c.id,
+                author: c.author || c.user_id,
+                text: c.text || c.content || '',
+                createdAt: c.created_at,
+            };
+        }),
+        activityLog: (row.indent_activity || []).map(function(a) {
+            return {
+                action: a.action,
+                by: a.by || a.user_id,
+                at: a.at || a.created_at,
+                note: a.note || '',
+            };
+        }),
+        documents: (row.indent_documents || []).map(function(d) {
+            return {
+                id: d.id,
+                name: d.name || d.file_name || '',
+                category: d.category || '',
+                storagePath: d.storage_path || '',
+                uploadedBy: d.uploaded_by || '',
+                uploadedAt: d.uploaded_at || d.created_at || '',
+                size: d.size || 0,
+                mimeType: d.mime_type || '',
+            };
+        }),
+    };
+    return indent;
+}
 
-// ============================================================================
-// INDENT DATA (with activityLog and consistent priority)
-// ============================================================================
+function transformPO(row) {
+    return {
+        id: row.id,
+        indentId: row.indent_id,
+        vendorId: row.vendor_id,
+        status: row.status || 'draft',
+        createdAt: row.created_at,
+        createdBy: row.created_by,
+        updatedAt: row.updated_at,
+        updatedBy: row.updated_by,
+        submittedAt: row.submitted_at,
+        submittedBy: row.submitted_by,
+        approvedAt: row.approved_at,
+        approvedBy: row.approved_by,
+        issuedAt: row.issued_at,
+        issuedBy: row.issued_by,
+        closedAt: row.closed_at,
+        closedBy: row.closed_by,
+        cancelledAt: row.cancelled_at,
+        cancelledBy: row.cancelled_by,
+        cancelReason: row.cancel_reason || '',
+        rejectReason: row.reject_reason || '',
+        mdRejectReason: row.md_reject_reason || '',
+        version: row.version || 1,
+        deliveryDate: row.delivery_date || '',
+        paymentTerms: row.payment_terms || '',
+        deliveryAddress: row.delivery_address || '',
+        notes: row.notes || '',
+        officeId: row.office_id || '',
+        lineItems: (row.po_line_items || []).map(function(li) {
+            return {
+                id: li.id,
+                description: li.description || '',
+                quantity: li.quantity || li.qty || 0,
+                qty: li.quantity || li.qty || 0,
+                unit: li.unit || '',
+                unitPrice: li.unit_price || 0,
+                gstPercent: li.gst_percent !== undefined ? li.gst_percent : 18,
+                receivedQty: li.received_qty || 0,
+                hsn: li.hsn || '',
+            };
+        }),
+        versionHistory: (row.po_version_history || []).map(function(v) {
+            return transformRow(v);
+        }),
+    };
+}
 
-const INDENTS = [
-    {
-        id: 'IND-2026-0001',
-        siteId: 'site-001',
-        createdBy: 'eng-001',
-        createdAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'completed',
-        priority: 'normal',
-        lineItems: [
-            { id: 'li-001-1', description: 'OPC 53 Grade Cement', qty: 100, unit: 'bags', received: 100 },
-            { id: 'li-001-2', description: 'TMT Steel 16mm', qty: 50, unit: 'kg', received: 50 },
-            { id: 'li-001-3', description: 'River Sand', qty: 30, unit: 'cum', received: 30 },
-        ],
-        comments: [
-            { id: 'cmt-001-1', author: 'pm-001', text: 'Approved for procurement', createdAt: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString() },
-        ],
-        activityLog: [
-            { action: 'Created', by: 'eng-001', at: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Submitted for Approval', by: 'eng-001', at: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Approved', by: 'pm-001', at: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Assigned to Procurement', by: 'proc-001', at: new Date(Date.now() - 13 * 24 * 60 * 60 * 1000).toISOString(), note: 'Assigned to clerk-001' },
-            { action: 'Dispatched', by: 'clerk-001', at: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Completed', by: 'store-001', at: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(), note: 'All items received in full' },
-        ],
-    },
-    {
-        id: 'IND-2026-0002',
-        siteId: 'site-001',
-        createdBy: 'eng-001',
-        createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'dispatched',
-        priority: 'urgent',
-        assignedTo: 'proc-001',
-        lineItems: [
-            { id: 'li-002-1', description: 'Ready Mix Concrete M20', qty: 200, unit: 'cum', received: 0 },
-            { id: 'li-002-2', description: '20mm Coarse Aggregate', qty: 150, unit: 'cum', received: 0 },
-            { id: 'li-002-3', description: 'Shuttering Plywood 19mm', qty: 50, unit: 'sheets', received: 0 },
-        ],
-        comments: [
-            { id: 'cmt-002-1', author: 'md-001', text: 'MD Approved', createdAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString() },
-        ],
-        activityLog: [
-            { action: 'Created', by: 'eng-001', at: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Submitted for Approval', by: 'eng-001', at: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Approved', by: 'md-001', at: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(), note: 'MD Approved' },
-            { action: 'Assigned to Procurement', by: 'proc-001', at: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Dispatched', by: 'proc-001', at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-        ],
-    },
-    {
-        id: 'IND-2026-0003',
-        siteId: 'site-002',
-        createdBy: 'eng-001',
-        createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'in_procurement',
-        priority: 'normal',
-        assignedTo: 'clerk-001',
-        lineItems: [
-            { id: 'li-003-1', description: 'AAC Blocks (600x200x150)', qty: 10000, unit: 'nos', received: 0 },
-            { id: 'li-003-2', description: 'Tile Adhesive', qty: 75, unit: 'bags', received: 0 },
-        ],
-        comments: [],
-        activityLog: [
-            { action: 'Created', by: 'eng-001', at: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Submitted for Approval', by: 'eng-001', at: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Approved', by: 'pm-001', at: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Assigned to Procurement', by: 'proc-001', at: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(), note: 'Assigned to clerk-001' },
-        ],
-    },
-    {
-        id: 'IND-2026-0004',
-        siteId: 'site-001',
-        createdBy: 'eng-001',
-        createdAt: new Date(Date.now() - 1.08 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'pending_approval',
-        priority: 'urgent',
-        lineItems: [
-            { id: 'li-004-1', description: 'Waterproofing Compound', qty: 500, unit: 'litres', received: 0 },
-            { id: 'li-004-2', description: 'Curing Compound', qty: 200, unit: 'litres', received: 0 },
-        ],
-        comments: [],
-        activityLog: [
-            { action: 'Created', by: 'eng-001', at: new Date(Date.now() - 1.08 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Submitted for Approval', by: 'eng-001', at: new Date(Date.now() - 1.08 * 24 * 60 * 60 * 1000).toISOString(), note: 'SLA breach warning - pending over 24 hours' },
-        ],
-    },
-    {
-        id: 'IND-2026-0005',
-        siteId: 'site-001',
-        createdBy: 'store-001',
-        createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'approved',
-        priority: 'low',
-        lineItems: [
-            { id: 'li-005-1', description: 'Safety Helmets ISI', qty: 100, unit: 'nos', received: 0 },
-            { id: 'li-005-2', description: 'Safety Gloves (Rubber)', qty: 200, unit: 'pairs', received: 0 },
-            { id: 'li-005-3', description: 'First Aid Kit', qty: 10, unit: 'nos', received: 0, isBoq: false, nonBoqReason: 'Mandatory safety compliance - expiry replacement' },
-        ],
-        comments: [],
-        activityLog: [
-            { action: 'Created', by: 'store-001', at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Submitted for Approval', by: 'store-001', at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Approved', by: 'pm-001', at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-        ],
-    },
-    {
-        id: 'IND-2026-0006',
-        siteId: 'site-002',
-        createdBy: 'eng-001',
-        createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-        status: 'rejected',
-        priority: 'urgent',
-        rejectionReason: 'Use M20 grade mix instead of M15',
-        lineItems: [
-            { id: 'li-006-1', description: 'Ready Mix Concrete M15', qty: 100, unit: 'cum', received: 0 },
-            { id: 'li-006-2', description: 'M Sand (Manufactured Sand)', qty: 80, unit: 'cum', received: 0 },
-            { id: 'li-006-3', description: 'Concrete Admixture (Superplasticiser)', qty: 50, unit: 'litres', received: 0 },
-        ],
-        comments: [
-            { id: 'cmt-006-1', author: 'md-001', text: 'Use M20 grade mix instead of M15', createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString() },
-        ],
-        activityLog: [
-            { action: 'Created', by: 'eng-001', at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Submitted for Approval', by: 'eng-001', at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(), note: '' },
-            { action: 'Rejected', by: 'md-001', at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(), note: 'Use M20 grade mix instead of M15' },
-        ],
-    },
-];
+function transformGRN(row) {
+    return {
+        id: row.id,
+        poId: row.po_id,
+        lineItemId: row.line_item_id,
+        quantityReceived: row.quantity_received || 0,
+        receivedBy: row.received_by,
+        receivedAt: row.received_at,
+        remarks: row.remarks || '',
+    };
+}
 
-const INITIAL_NOTIFICATIONS = [
-    { id: 'notif-001', userId: 'pm-001', indentId: 'IND-2026-0004', message: 'Indent IND-2026-0004 pending approval (SLA breached)', read: false, createdAt: new Date(Date.now() - 1.08 * 24 * 60 * 60 * 1000).toISOString() },
-    { id: 'notif-002', userId: 'md-001', indentId: 'IND-2026-0004', message: 'Indent IND-2026-0004 pending approval', read: false, createdAt: new Date(Date.now() - 1.08 * 24 * 60 * 60 * 1000).toISOString() },
-    { id: 'notif-003', userId: 'proc-001', indentId: 'IND-2026-0002', message: 'Indent IND-2026-0002 assigned to you', read: false, createdAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString() },
-    { id: 'notif-004', userId: 'clerk-001', indentId: 'IND-2026-0003', message: 'Indent IND-2026-0003 assigned to you', read: false, createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString() },
-];
+function transformOffice(row) {
+    return {
+        id: row.id,
+        name: row.name || '',
+        city: row.city || '',
+        state: row.state || '',
+        address: row.address || '',
+        gstin: row.gstin || '',
+        pan: row.pan || '',
+        phone: row.phone || '',
+        email: row.email || '',
+    };
+}
 
-// ============================================================================
-// APP STATE & REDUCER
-// ============================================================================
+function transformOrgSettings(rows) {
+    var result = {};
+    if (Array.isArray(rows)) {
+        rows.forEach(function(row) {
+            if (row.key && row.value !== undefined) {
+                result[snakeToCamel(row.key)] = row.value;
+            }
+        });
+    }
+    return result;
+}
+
+function transformSiteAssignments(rows) {
+    var result = {};
+    if (Array.isArray(rows)) {
+        rows.forEach(function(row) {
+            var userId = row.user_id || row.userId;
+            var siteId = row.site_id || row.siteId;
+            if (!result[userId]) result[userId] = [];
+            if (siteId && result[userId].indexOf(siteId) === -1) {
+                result[userId].push(siteId);
+            }
+        });
+    }
+    return result;
+}
+
+function transformBoqLists(rows) {
+    var result = {};
+    if (Array.isArray(rows)) {
+        rows.forEach(function(row) {
+            var siteId = row.site_id || row.siteId;
+            if (!result[siteId]) result[siteId] = [];
+            result[siteId].push({
+                id: row.id,
+                name: row.name || '',
+                unit: row.unit || '',
+                category: row.category || '',
+                hsn: row.hsn || '',
+            });
+        });
+    }
+    return result;
+}
+
+// ============ DATA LOADING ============
+async function loadAllData(userId) {
+    var results = await Promise.all([
+        supabaseClient.schema('core').from('profiles').select('*').eq('is_active', true),
+        supabaseClient.schema('core').from('offices').select('*').eq('is_active', true),
+        supabaseClient.schema('core').from('sites').select('*').eq('is_active', true),
+        supabaseClient.schema('core').from('site_assignments').select('*'),
+        supabaseClient.schema('core').from('vendors').select('*').eq('is_active', true),
+        supabaseClient.schema('indent_flow').from('boq_lists').select('*'),
+        supabaseClient.schema('indent_flow').from('indents').select('*, indent_line_items(*), indent_activity(*), indent_comments(*), indent_documents(*)'),
+        supabaseClient.schema('indent_flow').from('purchase_orders').select('*, po_line_items(*), po_version_history(*)'),
+        supabaseClient.schema('indent_flow').from('grns').select('*, grn_items(*)'),
+        supabaseClient.schema('indent_flow').from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
+        supabaseClient.schema('core').from('org_settings').select('*'),
+    ]);
+
+    var profilesRes = results[0];
+    var officesRes = results[1];
+    var sitesRes = results[2];
+    var assignmentsRes = results[3];
+    var vendorsRes = results[4];
+    var boqRes = results[5];
+    var indentsRes = results[6];
+    var posRes = results[7];
+    var grnsRes = results[8];
+    var notifsRes = results[9];
+    var settingsRes = results[10];
+
+    // Log any errors
+    var allRes = [profilesRes, officesRes, sitesRes, assignmentsRes, vendorsRes, boqRes, indentsRes, posRes, grnsRes, notifsRes, settingsRes];
+    var tableNames = ['profiles', 'offices', 'sites', 'site_assignments', 'vendors', 'boq_lists', 'indents', 'purchase_orders', 'grns', 'notifications', 'org_settings'];
+    for (var ri = 0; ri < allRes.length; ri++) {
+        if (allRes[ri].error) {
+            console.error('[NC_MIS] Error loading ' + tableNames[ri] + ':', allRes[ri].error.message);
+        }
+    }
+
+    return {
+        users: (profilesRes.data || []).map(transformProfile),
+        offices: (officesRes.data || []).map(transformOffice),
+        sites: (sitesRes.data || []).map(transformSite),
+        siteAssignments: transformSiteAssignments(assignmentsRes.data || []),
+        vendors: (vendorsRes.data || []).map(transformVendor),
+        boqLists: transformBoqLists(boqRes.data || []),
+        indents: (indentsRes.data || []).map(transformIndent),
+        purchaseOrders: (posRes.data || []).map(transformPO),
+        grns: (grnsRes.data || []).map(transformGRN),
+        notifications: (notifsRes.data || []).map(function(n) {
+            return {
+                id: n.id,
+                userId: n.user_id,
+                indentId: n.indent_id,
+                message: n.message,
+                read: n.read || false,
+                createdAt: n.created_at,
+            };
+        }),
+        orgSettings: transformOrgSettings(settingsRes.data || []),
+    };
+}
+
+// ============ SUPABASE SYNC LAYER ============
+async function supabaseSync(action, state) {
+    try {
+        switch (action.type) {
+            case 'CREATE_INDENT': {
+                var indent = action.payload;
+                var indentRow = {
+                    id: indent.id,
+                    site_id: indent.siteId,
+                    created_by: indent.createdBy,
+                    created_at: indent.createdAt,
+                    status: indent.status,
+                    priority: indent.priority || 'normal',
+                    description: indent.description || '',
+                    notes: indent.notes || '',
+                };
+                await supabaseClient.schema('indent_flow').from('indents').insert(indentRow);
+
+                if (indent.lineItems && indent.lineItems.length > 0) {
+                    var liRows = indent.lineItems.map(function(li) {
+                        return {
+                            id: li.id,
+                            indent_id: indent.id,
+                            description: li.description,
+                            qty: li.qty,
+                            unit: li.unit,
+                            received: li.received || 0,
+                            is_boq: li.isBoq !== false,
+                            non_boq_reason: li.nonBoqReason || null,
+                        };
+                    });
+                    await supabaseClient.schema('indent_flow').from('indent_line_items').insert(liRows);
+                }
+
+                if (indent.activityLog && indent.activityLog.length > 0) {
+                    var actRows = indent.activityLog.map(function(a) {
+                        return {
+                            indent_id: indent.id,
+                            action: a.action,
+                            user_id: a.by,
+                            created_at: a.at,
+                            note: a.note || '',
+                        };
+                    });
+                    await supabaseClient.schema('indent_flow').from('indent_activity').insert(actRows);
+                }
+                break;
+            }
+
+            case 'APPROVE_INDENT': {
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ status: 'approved' })
+                    .eq('id', action.payload.indentId);
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: 'Approved',
+                    user_id: action.payload.approvedBy || state.currentUserId,
+                    note: action.payload.note || '',
+                });
+                break;
+            }
+
+            case 'REJECT_INDENT': {
+                var isReturn = action.payload.returnForRevision;
+                var newStatus = isReturn ? 'returned_for_revision' : 'rejected';
+                var actionLabel = isReturn ? 'Returned for Revision' : 'Rejected';
+
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ status: newStatus, rejection_reason: action.payload.reason || '' })
+                    .eq('id', action.payload.indentId);
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: actionLabel,
+                    user_id: action.payload.rejectedBy || state.currentUserId,
+                    note: action.payload.reason || '',
+                });
+                break;
+            }
+
+            case 'ESCALATE_TO_MD': {
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ status: 'escalated_to_md', escalation_remarks: action.payload.remarks || '' })
+                    .eq('id', action.payload.indentId);
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: 'Escalated to MD',
+                    user_id: state.currentUserId,
+                    note: action.payload.remarks || '',
+                });
+                break;
+            }
+
+            case 'ASSIGN_INDENT': {
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ status: 'in_procurement', assigned_to: action.payload.userId })
+                    .eq('id', action.payload.indentId);
+
+                var assigneeName = '';
+                var assigneeUser = (state.users || []).find(function(u) { return u.id === action.payload.userId; });
+                if (assigneeUser) assigneeName = assigneeUser.name;
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: 'Assigned to Procurement',
+                    user_id: action.payload.assignedBy || state.currentUserId,
+                    note: 'Assigned to ' + assigneeName,
+                });
+                break;
+            }
+
+            case 'REVISE_RESUBMIT': {
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({
+                        status: 'pending_approval',
+                        is_revised: true,
+                        revision_count: (action.payload.revisionCount || 0) + 1,
+                        notes: action.payload.notes || '',
+                        submitted_at: new Date().toISOString(),
+                    })
+                    .eq('id', action.payload.indentId);
+
+                // Delete old line items and insert new ones
+                await supabaseClient.schema('indent_flow').from('indent_line_items')
+                    .delete().eq('indent_id', action.payload.indentId);
+
+                if (action.payload.lineItems && action.payload.lineItems.length > 0) {
+                    var revLiRows = action.payload.lineItems.map(function(li) {
+                        return {
+                            id: li.id,
+                            indent_id: action.payload.indentId,
+                            description: li.description,
+                            qty: li.qty,
+                            unit: li.unit,
+                            received: li.received || 0,
+                            is_boq: li.isBoq !== false,
+                            non_boq_reason: li.nonBoqReason || null,
+                        };
+                    });
+                    await supabaseClient.schema('indent_flow').from('indent_line_items').insert(revLiRows);
+                }
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: 'Revised & Resubmitted',
+                    user_id: action.payload.revisedBy,
+                    note: action.payload.remarks || '',
+                });
+
+                if (action.payload.remarks) {
+                    await supabaseClient.schema('indent_flow').from('indent_comments').insert({
+                        indent_id: action.payload.indentId,
+                        user_id: action.payload.revisedBy,
+                        content: action.payload.remarks,
+                    });
+                }
+                break;
+            }
+
+            case 'ADD_COMMENT': {
+                await supabaseClient.schema('indent_flow').from('indent_comments').insert({
+                    indent_id: action.payload.indentId,
+                    user_id: action.payload.author,
+                    content: action.payload.text,
+                });
+                break;
+            }
+
+            case 'ADD_DOCUMENT': {
+                var doc = action.payload.document;
+                await supabaseClient.schema('indent_flow').from('indent_documents').insert({
+                    id: doc.id,
+                    indent_id: action.payload.indentId,
+                    file_name: doc.name,
+                    category: doc.category || '',
+                    storage_path: doc.storagePath || doc.data || '',
+                    uploaded_by: state.currentUserId,
+                    size: doc.size || 0,
+                    mime_type: doc.mimeType || '',
+                });
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: 'Document Uploaded',
+                    user_id: state.currentUserId,
+                    note: doc.name + ' (' + (doc.category || 'general') + ')',
+                });
+                break;
+            }
+
+            case 'DELETE_DOCUMENT': {
+                await supabaseClient.schema('indent_flow').from('indent_documents')
+                    .delete().eq('id', action.payload.documentId);
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: 'Document Removed',
+                    user_id: state.currentUserId,
+                    note: action.payload.documentName || '',
+                });
+                break;
+            }
+
+            case 'CREATE_PO': {
+                var po = action.payload.po;
+                var poRow = {
+                    id: po.id,
+                    indent_id: action.payload.indentId,
+                    vendor_id: po.vendorId,
+                    status: po.status || 'draft',
+                    created_by: state.currentUserId,
+                    version: 1,
+                    delivery_date: po.deliveryDate || null,
+                    payment_terms: po.paymentTerms || '',
+                    delivery_address: po.deliveryAddress || '',
+                    notes: po.notes || '',
+                    office_id: po.officeId || '',
+                };
+                await supabaseClient.schema('indent_flow').from('purchase_orders').insert(poRow);
+
+                if (po.lineItems && po.lineItems.length > 0) {
+                    var poLiRows = po.lineItems.map(function(li) {
+                        return {
+                            id: li.id,
+                            po_id: po.id,
+                            description: li.description || '',
+                            quantity: li.quantity || li.qty || 0,
+                            unit: li.unit || '',
+                            unit_price: li.unitPrice || 0,
+                            gst_percent: li.gstPercent !== undefined ? li.gstPercent : 18,
+                            hsn: li.hsn || '',
+                        };
+                    });
+                    await supabaseClient.schema('indent_flow').from('po_line_items').insert(poLiRows);
+                }
+
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ status: 'po_draft', linked_po: po.id })
+                    .eq('id', action.payload.indentId);
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: 'PO Created',
+                    user_id: state.currentUserId,
+                    note: 'PO ' + po.id + ' created',
+                });
+                break;
+            }
+
+            case 'UPDATE_PO': {
+                var updates = action.payload.updates || {};
+                var dbUpdates = {};
+                if (updates.vendorId !== undefined) dbUpdates.vendor_id = updates.vendorId;
+                if (updates.deliveryDate !== undefined) dbUpdates.delivery_date = updates.deliveryDate;
+                if (updates.paymentTerms !== undefined) dbUpdates.payment_terms = updates.paymentTerms;
+                if (updates.deliveryAddress !== undefined) dbUpdates.delivery_address = updates.deliveryAddress;
+                if (updates.notes !== undefined) dbUpdates.notes = updates.notes;
+                if (updates.officeId !== undefined) dbUpdates.office_id = updates.officeId;
+                dbUpdates.updated_at = new Date().toISOString();
+                dbUpdates.updated_by = state.currentUserId;
+
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update(dbUpdates).eq('id', action.payload.poId);
+
+                if (updates.lineItems) {
+                    await supabaseClient.schema('indent_flow').from('po_line_items')
+                        .delete().eq('po_id', action.payload.poId);
+                    var updPoLi = updates.lineItems.map(function(li) {
+                        return {
+                            id: li.id,
+                            po_id: action.payload.poId,
+                            description: li.description || '',
+                            quantity: li.quantity || li.qty || 0,
+                            unit: li.unit || '',
+                            unit_price: li.unitPrice || 0,
+                            gst_percent: li.gstPercent !== undefined ? li.gstPercent : 18,
+                            hsn: li.hsn || '',
+                        };
+                    });
+                    await supabaseClient.schema('indent_flow').from('po_line_items').insert(updPoLi);
+                }
+                break;
+            }
+
+            case 'SUBMIT_PO_FOR_APPROVAL': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'pending_md_approval', submitted_at: new Date().toISOString(), submitted_by: state.currentUserId })
+                    .eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'MD_APPROVE_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: state.currentUserId })
+                    .eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'MD_REJECT_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'draft', rejected_at: new Date().toISOString(), rejected_by: state.currentUserId })
+                    .eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'APPROVE_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: state.currentUserId })
+                    .eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'REJECT_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'draft', rejected_at: new Date().toISOString(), rejected_by: state.currentUserId, reject_reason: action.payload.reason || '' })
+                    .eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'ISSUE_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'issued', issued_at: new Date().toISOString(), issued_by: state.currentUserId })
+                    .eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'RECEIVE_AGAINST_PO': {
+                var receipts = action.payload.receipts || [];
+                var grnId = 'GRN-' + Date.now();
+                var grnRows = receipts.map(function(r, ri) {
+                    return {
+                        id: grnId + '-' + ri,
+                        po_id: action.payload.poId,
+                        line_item_id: r.lineItemId,
+                        quantity_received: parseFloat(r.quantityReceived) || 0,
+                        received_by: state.currentUserId,
+                        remarks: r.remarks || '',
+                    };
+                });
+                await supabaseClient.schema('indent_flow').from('grns').insert(grnRows);
+
+                // Update PO line item received quantities
+                for (var gi = 0; gi < receipts.length; gi++) {
+                    var receipt = receipts[gi];
+                    var qty = parseFloat(receipt.quantityReceived) || 0;
+                    if (qty > 0) {
+                        // Use RPC or read-then-update since we need to increment
+                        var liRes = await supabaseClient.schema('indent_flow').from('po_line_items')
+                            .select('received_qty').eq('id', receipt.lineItemId).single();
+                        if (liRes.data) {
+                            var newReceivedQty = (liRes.data.received_qty || 0) + qty;
+                            await supabaseClient.schema('indent_flow').from('po_line_items')
+                                .update({ received_qty: newReceivedQty }).eq('id', receipt.lineItemId);
+                        }
+                    }
+                }
+                break;
+            }
+
+            case 'CLOSE_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'closed', closed_at: new Date().toISOString(), closed_by: state.currentUserId })
+                    .eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'CANCEL_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), cancelled_by: state.currentUserId, cancel_reason: action.payload.reason || '' })
+                    .eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'MARK_DISPATCHED': {
+                var indentId = typeof action.payload === 'string' ? action.payload : action.payload.indentId;
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ status: 'dispatched' }).eq('id', indentId);
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: indentId,
+                    action: 'Dispatched',
+                    user_id: state.currentUserId,
+                    note: '',
+                });
+                break;
+            }
+
+            case 'RECEIVE_ITEMS': {
+                var recIndentId = action.payload.indentId;
+                var lineItemUpdates = action.payload.lineItemUpdates || {};
+                var updateKeys = Object.keys(lineItemUpdates);
+                for (var rk = 0; rk < updateKeys.length; rk++) {
+                    await supabaseClient.schema('indent_flow').from('indent_line_items')
+                        .update({ received: lineItemUpdates[updateKeys[rk]] })
+                        .eq('id', updateKeys[rk]);
+                }
+
+                // Check if all received - the reducer handles status update
+                var indentForReceive = (state.indents || []).find(function(i) { return i.id === recIndentId; });
+                if (indentForReceive) {
+                    var updatedLIs = indentForReceive.lineItems.map(function(li) {
+                        return lineItemUpdates[li.id] !== undefined ? Object.assign({}, li, { received: lineItemUpdates[li.id] }) : li;
+                    });
+                    var allDone = updatedLIs.every(function(li) { return li.received >= li.qty; });
+                    if (allDone) {
+                        await supabaseClient.schema('indent_flow').from('indents')
+                            .update({ status: 'completed' }).eq('id', recIndentId);
+                    }
+                }
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: recIndentId,
+                    action: 'Items Received',
+                    user_id: action.payload.receivedBy || state.currentUserId,
+                    note: '',
+                });
+                break;
+            }
+
+            case 'SUBMIT_DRAFT': {
+                var draftId = typeof action.payload === 'string' ? action.payload : action.payload.indentId;
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ status: 'pending_approval', submitted_at: new Date().toISOString() })
+                    .eq('id', draftId);
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: draftId,
+                    action: 'Submitted for Approval',
+                    user_id: state.currentUserId,
+                    note: '',
+                });
+                break;
+            }
+
+            case 'UPDATE_DRAFT': {
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ description: action.payload.description || '', notes: action.payload.notes || '' })
+                    .eq('id', action.payload.indentId);
+
+                // Replace line items
+                await supabaseClient.schema('indent_flow').from('indent_line_items')
+                    .delete().eq('indent_id', action.payload.indentId);
+
+                if (action.payload.lineItems && action.payload.lineItems.length > 0) {
+                    var draftLiRows = action.payload.lineItems.map(function(li) {
+                        return {
+                            id: li.id,
+                            indent_id: action.payload.indentId,
+                            description: li.description,
+                            qty: li.qty,
+                            unit: li.unit,
+                            received: 0,
+                        };
+                    });
+                    await supabaseClient.schema('indent_flow').from('indent_line_items').insert(draftLiRows);
+                }
+                break;
+            }
+
+            case 'CLONE_INDENT': {
+                // The reducer creates the clone in state, we need to sync it
+                // The cloned indent will be in state after reducer runs
+                // We'll insert it on next tick by reading from state
+                // Actually we can construct it here
+                var sourceIndent = (state.indents || []).find(function(i) { return i.id === action.payload.sourceIndentId; });
+                if (sourceIndent) {
+                    var clonedBy = action.payload.clonedBy || state.currentUserId;
+                    var cloneId = 'IND-2026-' + String((state.indents || []).length + 1).padStart(4, '0');
+                    await supabaseClient.schema('indent_flow').from('indents').insert({
+                        id: cloneId,
+                        site_id: sourceIndent.siteId,
+                        created_by: clonedBy,
+                        status: 'draft',
+                        priority: sourceIndent.priority || 'normal',
+                    });
+
+                    var cloneLiRows = sourceIndent.lineItems.map(function(li, idx) {
+                        return {
+                            id: 'li-clone-' + Date.now() + '-' + idx,
+                            indent_id: cloneId,
+                            description: li.description,
+                            qty: li.qty,
+                            unit: li.unit,
+                            received: 0,
+                        };
+                    });
+                    if (cloneLiRows.length > 0) {
+                        await supabaseClient.schema('indent_flow').from('indent_line_items').insert(cloneLiRows);
+                    }
+
+                    await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                        indent_id: cloneId,
+                        action: 'Created',
+                        user_id: clonedBy,
+                        note: 'Cloned from ' + sourceIndent.id,
+                    });
+                }
+                break;
+            }
+
+            case 'BULK_APPROVE': {
+                var ids = action.payload.indentIds || [];
+                var bulkApprovedBy = action.payload.approvedBy || state.currentUserId;
+                for (var bi = 0; bi < ids.length; bi++) {
+                    await supabaseClient.schema('indent_flow').from('indents')
+                        .update({ status: 'approved' }).eq('id', ids[bi]);
+
+                    await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                        indent_id: ids[bi],
+                        action: 'Approved (Bulk)',
+                        user_id: bulkApprovedBy,
+                        note: 'Bulk approved with ' + ids.length + ' other indents',
+                    });
+                }
+                break;
+            }
+
+            case 'ADD_OFFICE': {
+                var officeRow = {
+                    id: action.payload.id,
+                    name: action.payload.name || '',
+                    city: action.payload.city || '',
+                    state: action.payload.state || '',
+                    address: action.payload.address || '',
+                    gstin: action.payload.gstin || '',
+                    pan: action.payload.pan || '',
+                    phone: action.payload.phone || '',
+                    email: action.payload.email || '',
+                };
+                await supabaseClient.schema('core').from('offices').insert(officeRow);
+                break;
+            }
+
+            case 'UPDATE_OFFICE': {
+                var officeUpdates = {};
+                var oUpd = action.payload.updates || {};
+                if (oUpd.name !== undefined) officeUpdates.name = oUpd.name;
+                if (oUpd.city !== undefined) officeUpdates.city = oUpd.city;
+                if (oUpd.state !== undefined) officeUpdates.state = oUpd.state;
+                if (oUpd.address !== undefined) officeUpdates.address = oUpd.address;
+                if (oUpd.gstin !== undefined) officeUpdates.gstin = oUpd.gstin;
+                if (oUpd.pan !== undefined) officeUpdates.pan = oUpd.pan;
+                if (oUpd.phone !== undefined) officeUpdates.phone = oUpd.phone;
+                if (oUpd.email !== undefined) officeUpdates.email = oUpd.email;
+                await supabaseClient.schema('core').from('offices')
+                    .update(officeUpdates).eq('id', action.payload.officeId);
+                break;
+            }
+
+            case 'DELETE_OFFICE': {
+                await supabaseClient.schema('core').from('offices')
+                    .update({ is_active: false }).eq('id', action.payload);
+                break;
+            }
+
+            case 'UPDATE_ORG_SETTINGS': {
+                var settingsKeys = Object.keys(action.payload);
+                for (var sk = 0; sk < settingsKeys.length; sk++) {
+                    var settKey = settingsKeys[sk];
+                    // Convert camelCase to snake_case for DB key
+                    var dbKey = settKey.replace(/([A-Z])/g, function(m) { return '_' + m.toLowerCase(); });
+                    await supabaseClient.schema('core').from('org_settings')
+                        .upsert({ key: dbKey, value: action.payload[settKey] }, { onConflict: 'key' });
+                }
+                break;
+            }
+
+            case 'ADD_NOTIFICATION':
+            case 'MARK_NOTIFICATION_READ': {
+                if (action.type === 'MARK_NOTIFICATION_READ') {
+                    await supabaseClient.schema('indent_flow').from('notifications')
+                        .update({ read: true }).eq('id', action.payload);
+                }
+                break;
+            }
+
+            case 'ADD_VENDOR': {
+                var v = action.payload;
+                await supabaseClient.schema('core').from('vendors').insert({
+                    id: v.id,
+                    name: v.name || '',
+                    contact_person: v.contactPerson || '',
+                    phone: v.phone || '',
+                    email: v.email || '',
+                    gstin: v.gstin || '',
+                    pan: v.pan || '',
+                    address: v.address || '',
+                    city: v.city || '',
+                    state: v.state || '',
+                    pincode: v.pincode || '',
+                    bank_account: v.bankAccount || '',
+                    bank_name: v.bankName || '',
+                    ifsc: v.ifsc || '',
+                    default_payment_terms: v.defaultPaymentTerms || 30,
+                    category: v.category || '',
+                    notes: v.notes || '',
+                });
+                break;
+            }
+
+            case 'EDIT_VENDOR': {
+                var vUpd = action.payload.updates || {};
+                var vDbUpd = {};
+                if (vUpd.name !== undefined) vDbUpd.name = vUpd.name;
+                if (vUpd.contactPerson !== undefined) vDbUpd.contact_person = vUpd.contactPerson;
+                if (vUpd.phone !== undefined) vDbUpd.phone = vUpd.phone;
+                if (vUpd.email !== undefined) vDbUpd.email = vUpd.email;
+                if (vUpd.gstin !== undefined) vDbUpd.gstin = vUpd.gstin;
+                if (vUpd.pan !== undefined) vDbUpd.pan = vUpd.pan;
+                if (vUpd.address !== undefined) vDbUpd.address = vUpd.address;
+                if (vUpd.city !== undefined) vDbUpd.city = vUpd.city;
+                if (vUpd.state !== undefined) vDbUpd.state = vUpd.state;
+                if (vUpd.pincode !== undefined) vDbUpd.pincode = vUpd.pincode;
+                if (vUpd.bankAccount !== undefined) vDbUpd.bank_account = vUpd.bankAccount;
+                if (vUpd.bankName !== undefined) vDbUpd.bank_name = vUpd.bankName;
+                if (vUpd.ifsc !== undefined) vDbUpd.ifsc = vUpd.ifsc;
+                if (vUpd.defaultPaymentTerms !== undefined) vDbUpd.default_payment_terms = vUpd.defaultPaymentTerms;
+                if (vUpd.category !== undefined) vDbUpd.category = vUpd.category;
+                if (vUpd.notes !== undefined) vDbUpd.notes = vUpd.notes;
+                await supabaseClient.schema('core').from('vendors')
+                    .update(vDbUpd).eq('id', action.payload.vendorId);
+                break;
+            }
+
+            case 'DELETE_VENDOR': {
+                await supabaseClient.schema('core').from('vendors')
+                    .update({ is_active: false }).eq('id', action.payload);
+                break;
+            }
+
+            case 'ADD_SITE': {
+                var siteRow = {
+                    id: action.payload.id,
+                    name: action.payload.name || '',
+                    location: action.payload.location || '',
+                    office_id: action.payload.officeId || '',
+                };
+                await supabaseClient.schema('core').from('sites').insert(siteRow);
+                break;
+            }
+
+            case 'EDIT_SITE': {
+                var siteUpd = {};
+                if (action.payload.name !== undefined) siteUpd.name = action.payload.name;
+                if (action.payload.location !== undefined) siteUpd.location = action.payload.location;
+                await supabaseClient.schema('core').from('sites')
+                    .update(siteUpd).eq('id', action.payload.siteId);
+                break;
+            }
+
+            case 'DELETE_SITE': {
+                await supabaseClient.schema('core').from('sites')
+                    .update({ is_active: false }).eq('id', action.payload);
+                break;
+            }
+
+            case 'TOGGLE_SITE_ASSIGNMENT':
+            case 'ASSIGN_SITE':
+            case 'UNASSIGN_SITE': {
+                var saUserId = action.payload.userId;
+                var saSiteId = action.payload.siteId;
+                if (action.type === 'UNASSIGN_SITE') {
+                    await supabaseClient.schema('core').from('site_assignments')
+                        .delete().eq('user_id', saUserId).eq('site_id', saSiteId);
+                } else if (action.type === 'ASSIGN_SITE') {
+                    await supabaseClient.schema('core').from('site_assignments')
+                        .upsert({ user_id: saUserId, site_id: saSiteId }, { onConflict: 'user_id,site_id' });
+                } else {
+                    // TOGGLE
+                    var currentAssigns = (state.siteAssignments || {})[saUserId] || [];
+                    if (currentAssigns.indexOf(saSiteId) !== -1) {
+                        await supabaseClient.schema('core').from('site_assignments')
+                            .delete().eq('user_id', saUserId).eq('site_id', saSiteId);
+                    } else {
+                        await supabaseClient.schema('core').from('site_assignments')
+                            .insert({ user_id: saUserId, site_id: saSiteId });
+                    }
+                }
+                break;
+            }
+
+            case 'ESCALATE_TO_MD':
+            case 'MD_ESCALATION_APPROVE':
+            case 'MD_ESCALATION_DISMISS': {
+                // Already handled ESCALATE_TO_MD above, handle the MD responses
+                if (action.type === 'MD_ESCALATION_APPROVE') {
+                    await supabaseClient.schema('indent_flow').from('indents')
+                        .update({ status: 'in_procurement', md_escalation_result: 'approved', md_remarks: action.payload.remarks || '' })
+                        .eq('id', action.payload.indentId);
+
+                    await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                        indent_id: action.payload.indentId,
+                        action: 'MD Escalation Approved',
+                        user_id: state.currentUserId,
+                        note: action.payload.remarks || '',
+                    });
+                } else if (action.type === 'MD_ESCALATION_DISMISS') {
+                    await supabaseClient.schema('indent_flow').from('indents')
+                        .update({ status: 'returned_for_revision', md_escalation_result: 'dismissed', md_remarks: action.payload.remarks || '' })
+                        .eq('id', action.payload.indentId);
+
+                    await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                        indent_id: action.payload.indentId,
+                        action: 'MD Escalation Dismissed',
+                        user_id: state.currentUserId,
+                        note: action.payload.remarks || '',
+                    });
+                }
+                break;
+            }
+
+            case 'REQUEST_MD_PO_APPROVAL': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'pending_md_approval' }).eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'MD_APPROVE_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'approved' }).eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'MD_REJECT_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'rejected', md_reject_reason: action.payload.reason || '' }).eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'FINALIZE_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'issued' }).eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'ATTACH_EXTERNAL_PO': {
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ status: 'po_issued', external_po: action.payload.fileName, linked_po: 'external' })
+                    .eq('id', action.payload.indentId);
+                break;
+            }
+
+            case 'RETURN_FOR_REVISION': {
+                await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ status: 'returned_for_revision', return_reason: action.payload.reason || '' })
+                    .eq('id', action.payload.indentId);
+
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: 'Returned for Revision',
+                    user_id: state.currentUserId,
+                    note: action.payload.reason || '',
+                });
+                break;
+            }
+
+            case 'AMEND_PO': {
+                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'amendment_pending', amended_at: new Date().toISOString(), amended_by: state.currentUserId })
+                    .eq('id', action.payload.poId);
+                break;
+            }
+
+            case 'LOG_ACTIVITY': {
+                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: action.payload.action,
+                    user_id: action.payload.by || state.currentUserId,
+                    note: action.payload.note || '',
+                });
+                break;
+            }
+
+            // Cases that don't need DB sync
+            case 'LOGIN_AS_USER':
+            case 'LOGOUT':
+            case 'NAVIGATE':
+            case 'SHOW_TOAST':
+            case 'HIDE_TOAST':
+            case 'LOAD_DATA':
+            case 'SET_LOADING':
+            case 'SET_AUTHENTICATED':
+            case 'SET_OFFLINE':
+                break;
+
+            // User management syncs
+            case 'ADD_USER': {
+                var newUser = action.payload.user;
+                await supabaseClient.schema('core').from('profiles').insert({
+                    id: newUser.id,
+                    full_name: newUser.name,
+                    email: newUser.email,
+                    role: newUser.role,
+                    phone: newUser.phone || '',
+                });
+                break;
+            }
+
+            case 'EDIT_USER': {
+                var userUpd = {};
+                if (action.payload.name !== undefined) userUpd.full_name = action.payload.name;
+                if (action.payload.email !== undefined) userUpd.email = action.payload.email;
+                if (action.payload.role !== undefined) userUpd.role = action.payload.role;
+                if (action.payload.phone !== undefined) userUpd.phone = action.payload.phone;
+                await supabaseClient.schema('core').from('profiles')
+                    .update(userUpd).eq('id', action.payload.userId);
+                break;
+            }
+
+            case 'DELETE_USER': {
+                await supabaseClient.schema('core').from('profiles')
+                    .update({ is_active: false }).eq('id', action.payload);
+                break;
+            }
+
+            case 'UPDATE_USER': {
+                var updFields = {
+                    full_name: action.payload.name,
+                    phone: action.payload.phone,
+                    role: action.payload.role,
+                    is_active: action.payload.isActive
+                };
+                await supabaseClient.schema('core').from('profiles')
+                    .update(updFields).eq('id', action.payload.userId);
+                break;
+            }
+
+            case 'DEACTIVATE_USER': {
+                await supabaseClient.schema('core').from('profiles')
+                    .update({ is_active: action.payload.isActive }).eq('id', action.payload.userId);
+                break;
+            }
+
+            case 'UPDATE_SITE_ASSIGNMENTS': {
+                // Delete existing assignments for this user
+                await supabaseClient.schema('core').from('site_assignments')
+                    .delete().eq('user_id', action.payload.userId);
+                // Insert new ones
+                if (action.payload.siteIds && action.payload.siteIds.length > 0) {
+                    var siteAssignRows = action.payload.siteIds.map(function(siteId) {
+                        return { user_id: action.payload.userId, site_id: siteId };
+                    });
+                    await supabaseClient.schema('core').from('site_assignments').insert(siteAssignRows);
+                }
+                break;
+            }
+
+            default:
+                console.log('[NC_MIS] No sync handler for action:', action.type);
+                break;
+        }
+
+        // Sync notifications that were generated by the reducer
+        // The reducer adds notifications to state; we need to insert them
+        if (action._generatedNotifications && action._generatedNotifications.length > 0) {
+            var notifRows = action._generatedNotifications.map(function(n) {
+                return {
+                    id: n.id,
+                    user_id: n.userId,
+                    indent_id: n.indentId,
+                    message: n.message,
+                    read: false,
+                };
+            });
+            await supabaseClient.schema('indent_flow').from('notifications').insert(notifRows);
+        }
+
+    } catch (err) {
+        console.error('[NC_MIS] Sync error for ' + action.type + ':', err);
+        // Log error to app_logs table
+        try {
+            await supabaseClient.schema('indent_flow').from('app_logs').insert({
+                user_id: state.currentUserId,
+                action_type: action.type,
+                error_message: err.message || String(err),
+                details: JSON.stringify(action.payload || {}),
+            });
+        } catch (logErr) {
+            console.error('[NC_MIS] Could not write to app_logs:', logErr);
+        }
+    }
+}
 
 const AppContext = createContext();
 
-const initialState = {
+var initialState = {
     currentUserId: null,
     currentUser: null,
-    indents: INDENTS,
-    notifications: INITIAL_NOTIFICATIONS,
-    users: INITIAL_USERS,
-    sites: INITIAL_SITES,
-    siteAssignments: INITIAL_SITE_ASSIGNMENTS,
-    currentRoute: '#login',
-    toast: null,
-    boqLists: INITIAL_BOQ_LISTS,
-    vendors: INITIAL_VENDORS,
+    users: [],
+    sites: [],
+    siteAssignments: {},
+    vendors: [],
+    indents: [],
     purchaseOrders: [],
     grns: [],
-    offices: [
-        { id: 'OFF-001', name: 'Hyderabad Office', city: 'Hyderabad', state: 'Telangana', address: 'Plot 42, Jubilee Hills, Hyderabad, Telangana 500033', gstin: '36AABCN1234F1Z5', pan: 'AABCN1234F', phone: '+91 40 2355 6789', email: 'hyd@navyacon.com' },
-        { id: 'OFF-002', name: 'Vizag Office', city: 'Visakhapatnam', state: 'Andhra Pradesh', address: '12-1-45, Beach Road, Visakhapatnam, AP 530001', gstin: '37AABCN1234F1Z6', pan: 'AABCN1234F', phone: '+91 891 255 6789', email: 'vizag@navyacon.com' },
-        { id: 'OFF-003', name: 'Bhubaneswar Office', city: 'Bhubaneswar', state: 'Odisha', address: 'Plot 7, Saheed Nagar, Bhubaneswar, Odisha 751007', gstin: '21AABCN1234F1Z7', pan: 'AABCN1234F', phone: '+91 674 255 1234', email: 'bbsr@navyacon.com' },
-    ],
-    orgSettings: {
-        companyName: 'Navyacon Construction Pvt Ltd',
-        senderEmail: 'procurement@navyacon.com',
-        companyAddress: 'Plot 42, Jubilee Hills, Hyderabad, Telangana 500033',
-        companyGSTIN: '36AABCN1234F1Z5',
-        companyPhone: '+91 40 2355 6789',
-        companyPAN: 'AABCN1234F',
-    },
+    notifications: [],
+    offices: [],
+    orgSettings: {},
+    boqLists: {},
+    currentRoute: '#login',
+    toast: null,
+    toasts: [],
+    isLoading: true,
+    isAuthenticated: false,
+    isOffline: false,
 };
 
 function createNotification(userId, indentId, message) {
@@ -1430,11 +2257,23 @@ function addActivityLog(indent, action, by, note) {
 function appReducer(state, action) {
     switch (action.type) {
         case 'LOGIN_AS_USER': {
-            const loginUser = typeof action.payload === 'string'
-                ? state.users.find(u => u.id === action.payload)
+            var loginUser = typeof action.payload === 'string'
+                ? state.users.find(function(u) { return u.id === action.payload; })
                 : action.payload;
-            return { ...state, currentUserId: loginUser ? loginUser.id : null, currentUser: loginUser || null };
+            return Object.assign({}, state, { currentUserId: loginUser ? loginUser.id : null, currentUser: loginUser || null });
         }
+
+        case 'LOAD_DATA':
+            return Object.assign({}, state, action.payload, { isLoading: false, isAuthenticated: true });
+
+        case 'SET_LOADING':
+            return Object.assign({}, state, { isLoading: action.payload });
+
+        case 'SET_AUTHENTICATED':
+            return Object.assign({}, state, { isAuthenticated: action.payload });
+
+        case 'SET_OFFLINE':
+            return Object.assign({}, state, { isOffline: action.payload });
 
         case 'LOGOUT':
             return { ...state, currentUserId: null, currentUser: null, currentRoute: '#login' };
@@ -1830,6 +2669,37 @@ function appReducer(state, action) {
             };
         }
 
+        case 'UPDATE_USER': {
+            return {
+                ...state,
+                users: state.users.map(function(u) {
+                    if (u.id !== action.payload.userId) return u;
+                    return Object.assign({}, u, {
+                        name: action.payload.name !== undefined ? action.payload.name : u.name,
+                        phone: action.payload.phone !== undefined ? action.payload.phone : u.phone,
+                        role: action.payload.role !== undefined ? action.payload.role : u.role,
+                        isActive: action.payload.isActive !== undefined ? action.payload.isActive : u.isActive,
+                    });
+                }),
+            };
+        }
+
+        case 'DEACTIVATE_USER': {
+            return {
+                ...state,
+                users: state.users.map(function(u) {
+                    if (u.id !== action.payload.userId) return u;
+                    return Object.assign({}, u, { isActive: action.payload.isActive });
+                }),
+            };
+        }
+
+        case 'UPDATE_SITE_ASSIGNMENTS': {
+            var newAssignments = Object.assign({}, state.siteAssignments);
+            newAssignments[action.payload.userId] = action.payload.siteIds || [];
+            return Object.assign({}, state, { siteAssignments: newAssignments });
+        }
+
         case 'ADD_SITE':
             return {
                 ...state,
@@ -2155,7 +3025,7 @@ function appReducer(state, action) {
                 ...state,
                 purchaseOrders: state.purchaseOrders.map(po =>
                     po.id === action.payload.poId
-                        ? { ...po, status: 'rejected', mdRejectReason: action.payload.reason }
+                        ? { ...po, status: 'draft', mdRejectReason: action.payload.reason }
                         : po
                 ),
                 indents: state.indents.map(ind =>
@@ -2318,11 +3188,11 @@ function appReducer(state, action) {
             return {
                 ...state,
                 purchaseOrders: state.purchaseOrders.map(function(po) {
-                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'pending_approval', submittedAt: new Date().toISOString(), submittedBy: state.currentUserId }) : po;
+                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'pending_md_approval', submittedAt: new Date().toISOString(), submittedBy: state.currentUserId }) : po;
                 }),
                 indents: state.indents.map(function(ind) {
                     return ind.linkedPO === action.payload.poId
-                        ? Object.assign({}, ind, { activityLog: addActivityLog(ind, 'PO Submitted for Approval', state.currentUserId, 'PO ' + action.payload.poId) })
+                        ? Object.assign({}, ind, { status: 'pending_md_po_approval', activityLog: addActivityLog(ind, 'PO Submitted for MD Approval', state.currentUserId, 'PO ' + action.payload.poId) })
                         : ind;
                 }),
             };
@@ -2330,7 +3200,7 @@ function appReducer(state, action) {
 
         case 'APPROVE_PO': {
             var _apo = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
-            if (!_apo || _apo.status !== 'pending_approval') return state;
+            if (!_apo || (_apo.status !== 'pending_approval' && _apo.status !== 'pending_md_approval')) return state;
             return {
                 ...state,
                 purchaseOrders: state.purchaseOrders.map(function(po) {
@@ -2534,9 +3404,26 @@ function useHashRoute() {
 // 3. LoginPage
 // ─────────────────────────────────────────────
 function LoginPage() {
-  const [state, dispatch] = useContext(AppContext);
+  var ctx = useContext(AppContext);
+  var state = ctx[0];
+  var dispatch = ctx[1];
 
-  const roleRoutes = {
+  var emailRef = useRef(null);
+  var passwordRef = useRef(null);
+  var _loginState = useState('');
+  var loginError = _loginState[0];
+  var setLoginError = _loginState[1];
+  var _loadingState = useState(false);
+  var isSubmitting = _loadingState[0];
+  var setIsSubmitting = _loadingState[1];
+  var _forgotState = useState(false);
+  var showForgot = _forgotState[0];
+  var setShowForgot = _forgotState[1];
+  var _forgotMsg = useState('');
+  var forgotMsg = _forgotMsg[0];
+  var setForgotMsg = _forgotMsg[1];
+
+  var roleRoutes = {
     admin: '#users',
     site_engineer: '#my-indents',
     storekeeper: '#store-pending',
@@ -2546,27 +3433,132 @@ function LoginPage() {
     md: '#dashboard',
   };
 
-  const handleQuickLogin = (user) => {
-    dispatch({ type: 'LOGIN_AS_USER', payload: user });
-    window.location.hash = roleRoutes[user.role] || '#dashboard';
+  var handleSignIn = function(e) {
+    e.preventDefault();
+    setLoginError('');
+    setIsSubmitting(true);
+
+    var email = emailRef.current ? emailRef.current.value : '';
+    var password = passwordRef.current ? passwordRef.current.value : '';
+
+    if (!email || !password) {
+      setLoginError('Please enter both email and password.');
+      setIsSubmitting(false);
+      return;
+    }
+
+    supabaseClient.auth.signInWithPassword({ email: email, password: password })
+      .then(function(result) {
+        if (result.error) {
+          setLoginError(result.error.message || 'Sign in failed');
+          setIsSubmitting(false);
+          return;
+        }
+
+        var session = result.data.session;
+        var authUser = result.data.user;
+        if (!authUser) {
+          setLoginError('No user returned from authentication.');
+          setIsSubmitting(false);
+          return;
+        }
+
+        // Fetch user profile from core.profiles
+        supabaseClient.schema('core').from('profiles').select('*').eq('id', authUser.id).single()
+          .then(function(profileRes) {
+            if (profileRes.error || !profileRes.data) {
+              setLoginError('User profile not found. Contact your administrator.');
+              setIsSubmitting(false);
+              return;
+            }
+
+            var profile = transformProfile(profileRes.data);
+            dispatch({ type: 'SET_LOADING', payload: true });
+
+            // Load all data
+            loadAllData(authUser.id).then(function(data) {
+              dispatch({ type: 'LOAD_DATA', payload: data });
+              dispatch({ type: 'LOGIN_AS_USER', payload: profile });
+              window.location.hash = roleRoutes[profile.role] || '#dashboard';
+              setIsSubmitting(false);
+            }).catch(function(err) {
+              console.error('[NC_MIS] Data load error:', err);
+              setLoginError('Failed to load application data: ' + err.message);
+              setIsSubmitting(false);
+            });
+          });
+      })
+      .catch(function(err) {
+        setLoginError(err.message || 'An unexpected error occurred');
+        setIsSubmitting(false);
+      });
+  };
+
+  var handleForgotPassword = function() {
+    var email = emailRef.current ? emailRef.current.value : '';
+    if (!email) {
+      setForgotMsg('Please enter your email address first.');
+      return;
+    }
+    supabaseClient.auth.resetPasswordForEmail(email)
+      .then(function(result) {
+        if (result.error) {
+          setForgotMsg('Error: ' + result.error.message);
+        } else {
+          setForgotMsg('Password reset email sent! Check your inbox.');
+        }
+      })
+      .catch(function(err) {
+        setForgotMsg('Error: ' + err.message);
+      });
   };
 
   return React.createElement('div', { className: 'login-container' },
     React.createElement('div', { className: 'login-card' },
-      React.createElement('div', { className: 'login-title' }, 'IndentFlow v3'),
-      React.createElement('div', { className: 'login-subtitle' }, 'Material Indent Management — Select a user to sign in'),
-      React.createElement('div', { className: 'user-grid' },
-        state.users.map(u =>
-          React.createElement('div', {
-            key: u.id,
-            className: 'user-button',
-            onClick: () => handleQuickLogin(u),
-          },
-            React.createElement('div', { className: 'user-name' }, u.name),
-            React.createElement('div', { className: 'user-role' }, getRoleBadge(u.role))
-          )
-        )
-      )
+      React.createElement('div', { className: 'login-title' }, 'IndentFlow'),
+      React.createElement('div', { className: 'login-subtitle' }, 'Material Indent Management System'),
+
+      loginError ? React.createElement('div', { className: 'login-error' }, loginError) : null,
+
+      React.createElement('form', { onSubmit: handleSignIn },
+        React.createElement('div', { className: 'form-group' },
+          React.createElement('label', { className: 'form-label' }, 'Email'),
+          React.createElement('input', {
+            ref: emailRef,
+            type: 'email',
+            className: 'form-input',
+            placeholder: 'Enter your email',
+            autoComplete: 'email',
+            disabled: isSubmitting,
+          })
+        ),
+        React.createElement('div', { className: 'form-group' },
+          React.createElement('label', { className: 'form-label' }, 'Password'),
+          React.createElement('input', {
+            ref: passwordRef,
+            type: 'password',
+            className: 'form-input',
+            placeholder: 'Enter your password',
+            autoComplete: 'current-password',
+            disabled: isSubmitting,
+          })
+        ),
+        React.createElement('button', {
+          type: 'submit',
+          className: 'btn btn-primary',
+          disabled: isSubmitting,
+          style: { width: '100%', padding: '12px', fontSize: 15 },
+        }, isSubmitting ? 'Signing in...' : 'Sign In')
+      ),
+
+      React.createElement('div', {
+        className: 'forgot-password-link',
+        onClick: handleForgotPassword,
+      }, 'Forgot Password?'),
+
+      forgotMsg ? React.createElement('div', {
+        style: { marginTop: 12, fontSize: 13, color: '#2563eb', textAlign: 'center' },
+      }, forgotMsg) : null
     )
   );
 }
@@ -2579,9 +3571,15 @@ function Navbar() {
   const user = state.currentUser;
   if (!user) return null;
 
-  const handleLogout = () => {
-    dispatch({ type: 'LOGOUT' });
-    window.location.hash = '#login';
+  var handleLogout = function() {
+    supabaseClient.auth.signOut().then(function() {
+      dispatch({ type: 'LOGOUT' });
+      window.location.hash = '#login';
+    }).catch(function(err) {
+      console.error('[NC_MIS] Sign out error:', err);
+      dispatch({ type: 'LOGOUT' });
+      window.location.hash = '#login';
+    });
   };
 
   return React.createElement('nav', {
@@ -2629,6 +3627,7 @@ function Sidebar() {
   const navItems = {
     admin: [
       { label: '👥 Users', hash: '#users' },
+      { label: '🛡️ User Management', hash: '#user-management' },
       { label: '🏗️ Sites', hash: '#sites' },
       { label: '🏢 Office Management', hash: '#offices' },
       { label: '🔗 Assignments', hash: '#assignments' },
@@ -2918,6 +3917,644 @@ function ActivityTimeline({ activityLog, users }) {
 
 
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// UserManagementScreen — Full user lifecycle management
+// ─────────────────────────────────────────────
+function UserManagementScreen() {
+  var _ctx = useContext(AppContext);
+  var state = _ctx[0];
+  var dispatch = _ctx[1];
+
+  var _showAdd = useState(false);
+  var showAdd = _showAdd[0];
+  var setShowAdd = _showAdd[1];
+
+  var _editUserId = useState(null);
+  var editUserId = _editUserId[0];
+  var setEditUserId = _editUserId[1];
+
+  var _siteAssignUserId = useState(null);
+  var siteAssignUserId = _siteAssignUserId[0];
+  var setSiteAssignUserId = _siteAssignUserId[1];
+
+  var _searchTerm = useState('');
+  var searchTerm = _searchTerm[0];
+  var setSearchTerm = _searchTerm[1];
+
+  var _filterRole = useState('all');
+  var filterRole = _filterRole[0];
+  var setFilterRole = _filterRole[1];
+
+  var _filterStatus = useState('all');
+  var filterStatus = _filterStatus[0];
+  var setFilterStatus = _filterStatus[1];
+
+  // Add user form state
+  var _addName = useState('');
+  var addName = _addName[0];
+  var setAddName = _addName[1];
+
+  var _addEmail = useState('');
+  var addEmail = _addEmail[0];
+  var setAddEmail = _addEmail[1];
+
+  var _addPhone = useState('');
+  var addPhone = _addPhone[0];
+  var setAddPhone = _addPhone[1];
+
+  var _addRole = useState('site_engineer');
+  var addRole = _addRole[0];
+  var setAddRole = _addRole[1];
+
+  var _addSiteIds = useState([]);
+  var addSiteIds = _addSiteIds[0];
+  var setAddSiteIds = _addSiteIds[1];
+
+  var _addError = useState('');
+  var addError = _addError[0];
+  var setAddError = _addError[1];
+
+  var _showInviteMsg = useState(null);
+  var showInviteMsg = _showInviteMsg[0];
+  var setShowInviteMsg = _showInviteMsg[1];
+
+  // Edit user form state
+  var _editName = useState('');
+  var editName = _editName[0];
+  var setEditName = _editName[1];
+
+  var _editPhone = useState('');
+  var editPhone = _editPhone[0];
+  var setEditPhone = _editPhone[1];
+
+  var _editRole = useState('');
+  var editRole = _editRole[0];
+  var setEditRole = _editRole[1];
+
+  // Site assignment state
+  var _assignSiteIds = useState([]);
+  var assignSiteIds = _assignSiteIds[0];
+  var setAssignSiteIds = _assignSiteIds[1];
+
+  var allRoles = [
+    { value: 'admin', label: 'Admin', color: '#7c3aed' },
+    { value: 'site_engineer', label: 'Site Engineer', color: '#2563eb' },
+    { value: 'storekeeper', label: 'Storekeeper', color: '#0891b2' },
+    { value: 'project_manager', label: 'Project Manager', color: '#059669' },
+    { value: 'procurement_manager', label: 'Procurement Manager', color: '#d97706' },
+    { value: 'procurement_clerk', label: 'Procurement Clerk', color: '#ea580c' },
+    { value: 'md', label: 'Managing Director', color: '#dc2626' },
+  ];
+
+  var getRoleColor = function(role) {
+    var found = allRoles.find(function(r) { return r.value === role; });
+    return found ? found.color : '#64748b';
+  };
+
+  var getRoleLabel = function(role) {
+    var found = allRoles.find(function(r) { return r.value === role; });
+    return found ? found.label : role;
+  };
+
+  // Filtered users
+  var filteredUsers = state.users.filter(function(u) {
+    if (searchTerm) {
+      var term = searchTerm.toLowerCase();
+      if ((u.name || '').toLowerCase().indexOf(term) === -1 && (u.email || '').toLowerCase().indexOf(term) === -1) {
+        return false;
+      }
+    }
+    if (filterRole !== 'all' && u.role !== filterRole) return false;
+    if (filterStatus === 'active' && u.isActive === false) return false;
+    if (filterStatus === 'inactive' && u.isActive !== false) return false;
+    return true;
+  });
+
+  // Get sites assigned to a user
+  var getUserSites = function(userId) {
+    var siteIds = state.siteAssignments[userId] || [];
+    return siteIds.map(function(sId) {
+      var site = state.sites.find(function(s) { return s.id === sId; });
+      return site ? site.name : sId;
+    });
+  };
+
+  // HANDLERS
+
+  var handleAddUser = function() {
+    setAddError('');
+    if (!addName.trim()) { setAddError('Name is required'); return; }
+    if (!addEmail.trim()) { setAddError('Email is required'); return; }
+    if (!addRole) { setAddError('Role is required'); return; }
+
+    // Check duplicate email
+    var exists = state.users.find(function(u) { return (u.email || '').toLowerCase() === addEmail.trim().toLowerCase(); });
+    if (exists) { setAddError('A user with this email already exists'); return; }
+
+    var newId = crypto.randomUUID ? crypto.randomUUID() : ('usr-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6));
+
+    var newUser = {
+      id: newId,
+      name: addName.trim(),
+      email: addEmail.trim().toLowerCase(),
+      phone: addPhone.trim(),
+      role: addRole,
+      isActive: true,
+    };
+
+    dispatch({ type: 'ADD_USER', payload: { user: newUser } });
+
+    // Also set up site assignments if any selected
+    if (addSiteIds.length > 0) {
+      dispatch({ type: 'UPDATE_SITE_ASSIGNMENTS', payload: { userId: newId, siteIds: addSiteIds } });
+    }
+
+    dispatch({ type: 'SHOW_TOAST', payload: { message: 'User profile created for ' + addName.trim(), type: 'success' } });
+
+    // Show invite message
+    setShowInviteMsg(addEmail.trim().toLowerCase());
+
+    // Reset form
+    setAddName('');
+    setAddEmail('');
+    setAddPhone('');
+    setAddRole('site_engineer');
+    setAddSiteIds([]);
+    setShowAdd(false);
+  };
+
+  var startEdit = function(user) {
+    setEditUserId(user.id);
+    setEditName(user.name || '');
+    setEditPhone(user.phone || '');
+    setEditRole(user.role || 'site_engineer');
+  };
+
+  var handleSaveEdit = function() {
+    if (!editName.trim()) return;
+    dispatch({
+      type: 'UPDATE_USER',
+      payload: {
+        userId: editUserId,
+        name: editName.trim(),
+        phone: editPhone.trim(),
+        role: editRole,
+        isActive: true,
+      }
+    });
+    dispatch({ type: 'SHOW_TOAST', payload: { message: 'User updated successfully', type: 'success' } });
+    setEditUserId(null);
+  };
+
+  var handleToggleActive = function(user) {
+    var newStatus = user.isActive === false ? true : false;
+    dispatch({
+      type: 'DEACTIVATE_USER',
+      payload: { userId: user.id, isActive: newStatus }
+    });
+    dispatch({
+      type: 'SHOW_TOAST',
+      payload: {
+        message: (user.name || 'User') + (newStatus ? ' reactivated' : ' deactivated'),
+        type: newStatus ? 'success' : 'warning'
+      }
+    });
+  };
+
+  var openSiteAssign = function(user) {
+    setSiteAssignUserId(user.id);
+    setAssignSiteIds(state.siteAssignments[user.id] || []);
+  };
+
+  var handleSaveSiteAssignments = function() {
+    dispatch({
+      type: 'UPDATE_SITE_ASSIGNMENTS',
+      payload: { userId: siteAssignUserId, siteIds: assignSiteIds }
+    });
+    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Site assignments updated', type: 'success' } });
+    setSiteAssignUserId(null);
+  };
+
+  var toggleSiteInAssign = function(siteId) {
+    setAssignSiteIds(function(prev) {
+      if (prev.indexOf(siteId) >= 0) {
+        return prev.filter(function(s) { return s !== siteId; });
+      }
+      return prev.concat([siteId]);
+    });
+  };
+
+  var toggleSiteInAdd = function(siteId) {
+    setAddSiteIds(function(prev) {
+      if (prev.indexOf(siteId) >= 0) {
+        return prev.filter(function(s) { return s !== siteId; });
+      }
+      return prev.concat([siteId]);
+    });
+  };
+
+  // Shared styles
+  var cardStyle = { background: '#fff', borderRadius: '10px', border: '1px solid #e2e8f0', overflow: 'hidden' };
+  var headerCellStyle = { padding: '12px 16px', textAlign: 'left', borderBottom: '2px solid #e2e8f0', color: '#64748b', fontWeight: 700, fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' };
+  var cellStyle = { padding: '12px 16px', borderBottom: '1px solid #f1f5f9', fontSize: '13px' };
+  var inputStyle = { width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box' };
+  var labelStyle = { display: 'block', fontWeight: '600', marginBottom: '6px', fontSize: '13px', color: '#374151' };
+  var btnPrimary = { padding: '8px 20px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 600, fontSize: '13px', cursor: 'pointer' };
+  var btnSecondary = { padding: '8px 16px', background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: '6px', fontWeight: 600, fontSize: '13px', cursor: 'pointer' };
+  var btnDanger = { padding: '6px 14px', background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: '6px', fontWeight: 600, fontSize: '12px', cursor: 'pointer' };
+  var btnSuccess = { padding: '6px 14px', background: '#dcfce7', color: '#16a34a', border: 'none', borderRadius: '6px', fontWeight: 600, fontSize: '12px', cursor: 'pointer' };
+  var btnSmall = { padding: '5px 12px', border: 'none', borderRadius: '5px', fontWeight: 600, fontSize: '12px', cursor: 'pointer' };
+
+  var roleBadge = function(role) {
+    var color = getRoleColor(role);
+    return React.createElement('span', {
+      style: {
+        display: 'inline-block', padding: '3px 10px', borderRadius: '12px',
+        fontSize: '11px', fontWeight: 600, color: color,
+        background: color + '18', border: '1px solid ' + color + '30',
+      }
+    }, getRoleLabel(role));
+  };
+
+  var statusBadge = function(isActive) {
+    var active = isActive !== false;
+    return React.createElement('span', {
+      style: {
+        display: 'inline-block', padding: '3px 10px', borderRadius: '12px',
+        fontSize: '11px', fontWeight: 600,
+        color: active ? '#16a34a' : '#dc2626',
+        background: active ? '#dcfce7' : '#fee2e2',
+      }
+    }, active ? 'Active' : 'Inactive');
+  };
+
+  // ── INVITE MESSAGE MODAL ──
+  var inviteModal = showInviteMsg ? React.createElement('div', {
+    style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }
+  },
+    React.createElement('div', {
+      style: { background: '#fff', borderRadius: '12px', padding: '28px', width: '500px', maxWidth: '90vw', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }
+    },
+      React.createElement('h3', { style: { marginBottom: '12px', color: '#1e293b', fontSize: '18px' } }, 'User Profile Created'),
+      React.createElement('div', {
+        style: { background: '#fffbeb', border: '1px solid #fbbf24', borderRadius: '8px', padding: '16px', marginBottom: '16px' }
+      },
+        React.createElement('p', { style: { color: '#92400e', fontSize: '14px', fontWeight: 600, marginBottom: '8px' } }, 'Next Step: Invite this user to sign in'),
+        React.createElement('p', { style: { color: '#92400e', fontSize: '13px', marginBottom: '8px' } },
+          'The profile for ' + showInviteMsg + ' has been created in the system. To complete setup:'
+        ),
+        React.createElement('ol', { style: { color: '#92400e', fontSize: '13px', paddingLeft: '20px', margin: 0 } },
+          React.createElement('li', { style: { marginBottom: '4px' } }, 'Go to your Supabase Dashboard'),
+          React.createElement('li', { style: { marginBottom: '4px' } }, 'Navigate to Authentication > Users'),
+          React.createElement('li', { style: { marginBottom: '4px' } }, 'Click "Invite User"'),
+          React.createElement('li', { style: { marginBottom: '4px' } }, 'Enter the email: ' + showInviteMsg),
+          React.createElement('li', null, 'The user will receive an invite email with a link to set their password')
+        )
+      ),
+      React.createElement('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
+        React.createElement('button', {
+          onClick: function() {
+            if (navigator.clipboard) { navigator.clipboard.writeText(showInviteMsg); }
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Email copied to clipboard', type: 'info' } });
+          },
+          style: Object.assign({}, btnSecondary)
+        }, 'Copy Email'),
+        React.createElement('button', {
+          onClick: function() { setShowInviteMsg(null); },
+          style: Object.assign({}, btnPrimary)
+        }, 'Got It')
+      )
+    )
+  ) : null;
+
+  // ── SITE ASSIGNMENT MODAL ──
+  var siteAssignModal = siteAssignUserId ? (function() {
+    var assignUser = state.users.find(function(u) { return u.id === siteAssignUserId; });
+    if (!assignUser) return null;
+    return React.createElement('div', {
+      style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }
+    },
+      React.createElement('div', {
+        style: { background: '#fff', borderRadius: '12px', padding: '28px', width: '480px', maxWidth: '90vw', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }
+      },
+        React.createElement('h3', { style: { marginBottom: '4px', color: '#1e293b', fontSize: '18px' } }, 'Assign Sites'),
+        React.createElement('p', { style: { color: '#64748b', fontSize: '14px', marginBottom: '20px' } }, 'Select sites for ' + (assignUser.name || assignUser.email)),
+        React.createElement('div', {
+          style: { maxHeight: '300px', overflowY: 'auto', marginBottom: '20px' }
+        },
+          state.sites.length === 0
+            ? React.createElement('p', { style: { color: '#94a3b8', fontSize: '14px', padding: '12px' } }, 'No sites found. Add sites first.')
+            : state.sites.map(function(site) {
+                var checked = assignSiteIds.indexOf(site.id) >= 0;
+                return React.createElement('label', {
+                  key: site.id,
+                  style: {
+                    display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px',
+                    borderRadius: '6px', cursor: 'pointer', marginBottom: '4px',
+                    background: checked ? '#eff6ff' : 'transparent',
+                    border: checked ? '1px solid #bfdbfe' : '1px solid transparent',
+                  }
+                },
+                  React.createElement('input', {
+                    type: 'checkbox', checked: checked,
+                    onChange: function() { toggleSiteInAssign(site.id); },
+                    style: { width: '16px', height: '16px', accentColor: '#2563eb' }
+                  }),
+                  React.createElement('div', null,
+                    React.createElement('div', { style: { fontWeight: 600, fontSize: '14px', color: '#1e293b' } }, site.name),
+                    React.createElement('div', { style: { fontSize: '12px', color: '#64748b' } }, site.location || '')
+                  )
+                );
+              })
+        ),
+        React.createElement('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
+          React.createElement('button', {
+            onClick: function() { setSiteAssignUserId(null); },
+            style: Object.assign({}, btnSecondary)
+          }, 'Cancel'),
+          React.createElement('button', {
+            onClick: handleSaveSiteAssignments,
+            style: Object.assign({}, btnPrimary)
+          }, 'Save Assignments')
+        )
+      )
+    );
+  })() : null;
+
+  // ── EDIT USER MODAL ──
+  var editModal = editUserId ? (function() {
+    var editUser = state.users.find(function(u) { return u.id === editUserId; });
+    if (!editUser) return null;
+    return React.createElement('div', {
+      style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }
+    },
+      React.createElement('div', {
+        style: { background: '#fff', borderRadius: '12px', padding: '28px', width: '480px', maxWidth: '90vw', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }
+      },
+        React.createElement('h3', { style: { marginBottom: '16px', color: '#1e293b', fontSize: '18px' } }, 'Edit User'),
+        React.createElement('div', { style: { marginBottom: '14px' } },
+          React.createElement('label', { style: labelStyle }, 'Email (read-only)'),
+          React.createElement('input', { type: 'text', value: editUser.email || '', disabled: true, style: Object.assign({}, inputStyle, { background: '#f8fafc', color: '#94a3b8' }) })
+        ),
+        React.createElement('div', { style: { marginBottom: '14px' } },
+          React.createElement('label', { style: labelStyle }, 'Full Name'),
+          React.createElement('input', {
+            type: 'text', value: editName,
+            onChange: function(e) { setEditName(e.target.value); },
+            style: inputStyle
+          })
+        ),
+        React.createElement('div', { style: { marginBottom: '14px' } },
+          React.createElement('label', { style: labelStyle }, 'Phone'),
+          React.createElement('input', {
+            type: 'tel', value: editPhone,
+            onChange: function(e) { setEditPhone(e.target.value); },
+            style: inputStyle
+          })
+        ),
+        React.createElement('div', { style: { marginBottom: '20px' } },
+          React.createElement('label', { style: labelStyle }, 'Role'),
+          React.createElement('select', {
+            value: editRole,
+            onChange: function(e) { setEditRole(e.target.value); },
+            style: inputStyle
+          },
+            allRoles.map(function(r) {
+              return React.createElement('option', { key: r.value, value: r.value }, r.label);
+            })
+          )
+        ),
+        React.createElement('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
+          React.createElement('button', {
+            onClick: function() { setEditUserId(null); },
+            style: Object.assign({}, btnSecondary)
+          }, 'Cancel'),
+          React.createElement('button', {
+            onClick: handleSaveEdit,
+            style: Object.assign({}, btnPrimary)
+          }, 'Save Changes')
+        )
+      )
+    );
+  })() : null;
+
+  // ── ADD USER FORM ──
+  var addUserForm = showAdd ? React.createElement('div', {
+    style: { background: '#fff', borderRadius: '10px', border: '1px solid #e2e8f0', padding: '24px', marginBottom: '20px' }
+  },
+    React.createElement('h3', { style: { fontSize: '16px', fontWeight: 700, color: '#1e293b', marginBottom: '16px' } }, 'Add New User'),
+    addError ? React.createElement('div', {
+      style: { background: '#fee2e2', border: '1px solid #fecaca', borderRadius: '6px', padding: '10px 14px', marginBottom: '14px', color: '#dc2626', fontSize: '13px' }
+    }, addError) : null,
+    React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '14px' } },
+      React.createElement('div', null,
+        React.createElement('label', { style: labelStyle }, 'Full Name *'),
+        React.createElement('input', {
+          type: 'text', value: addName,
+          onChange: function(e) { setAddName(e.target.value); },
+          placeholder: 'e.g. Ravi Kumar',
+          style: inputStyle
+        })
+      ),
+      React.createElement('div', null,
+        React.createElement('label', { style: labelStyle }, 'Email *'),
+        React.createElement('input', {
+          type: 'email', value: addEmail,
+          onChange: function(e) { setAddEmail(e.target.value); },
+          placeholder: 'e.g. ravi@navyacon.com',
+          style: inputStyle
+        })
+      ),
+      React.createElement('div', null,
+        React.createElement('label', { style: labelStyle }, 'Phone'),
+        React.createElement('input', {
+          type: 'tel', value: addPhone,
+          onChange: function(e) { setAddPhone(e.target.value); },
+          placeholder: '+91-XXXXX-XXXXX',
+          style: inputStyle
+        })
+      ),
+      React.createElement('div', null,
+        React.createElement('label', { style: labelStyle }, 'Role *'),
+        React.createElement('select', {
+          value: addRole,
+          onChange: function(e) { setAddRole(e.target.value); },
+          style: inputStyle
+        },
+          allRoles.map(function(r) {
+            return React.createElement('option', { key: r.value, value: r.value }, r.label);
+          })
+        )
+      )
+    ),
+    // Site checkboxes
+    React.createElement('div', { style: { marginBottom: '16px' } },
+      React.createElement('label', { style: labelStyle }, 'Assign to Sites'),
+      React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px' } },
+        state.sites.map(function(site) {
+          var checked = addSiteIds.indexOf(site.id) >= 0;
+          return React.createElement('label', {
+            key: site.id,
+            style: {
+              display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px',
+              borderRadius: '6px', cursor: 'pointer', fontSize: '13px',
+              background: checked ? '#eff6ff' : '#f8fafc',
+              border: checked ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
+            }
+          },
+            React.createElement('input', {
+              type: 'checkbox', checked: checked,
+              onChange: function() { toggleSiteInAdd(site.id); },
+              style: { accentColor: '#2563eb' }
+            }),
+            site.name
+          );
+        })
+      )
+    ),
+    React.createElement('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
+      React.createElement('button', {
+        onClick: function() { setShowAdd(false); setAddError(''); },
+        style: Object.assign({}, btnSecondary)
+      }, 'Cancel'),
+      React.createElement('button', {
+        onClick: handleAddUser,
+        style: Object.assign({}, btnPrimary)
+      }, 'Create User Profile')
+    )
+  ) : null;
+
+  // ── MAIN RENDER ──
+  return React.createElement('div', { style: { padding: '24px' } },
+    // Header
+    React.createElement('div', {
+      style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }
+    },
+      React.createElement('div', null,
+        React.createElement('h2', { style: { fontSize: '22px', fontWeight: 800, color: '#1e293b', marginBottom: '4px' } }, 'User Management'),
+        React.createElement('p', { style: { color: '#64748b', fontSize: '14px' } }, state.users.length + ' total users')
+      ),
+      React.createElement('button', {
+        onClick: function() { setShowAdd(!showAdd); setAddError(''); },
+        style: Object.assign({}, btnPrimary, { padding: '10px 24px', fontSize: '14px' })
+      }, showAdd ? 'Cancel' : '+ Add New User')
+    ),
+
+    // Note about invite flow
+    React.createElement('div', {
+      style: { background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '12px 16px', marginBottom: '20px', fontSize: '13px', color: '#1e40af' }
+    },
+      'Note: Creating a user here sets up their profile and role. To allow them to sign in, you must also invite them via the Supabase Authentication dashboard (Authentication > Users > Invite User).'
+    ),
+
+    // Add User Form
+    addUserForm,
+
+    // Filters
+    React.createElement('div', {
+      style: { display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }
+    },
+      React.createElement('input', {
+        type: 'text', value: searchTerm,
+        onChange: function(e) { setSearchTerm(e.target.value); },
+        placeholder: 'Search by name or email...',
+        style: Object.assign({}, inputStyle, { width: '260px' })
+      }),
+      React.createElement('select', {
+        value: filterRole,
+        onChange: function(e) { setFilterRole(e.target.value); },
+        style: Object.assign({}, inputStyle, { width: '180px' })
+      },
+        React.createElement('option', { value: 'all' }, 'All Roles'),
+        allRoles.map(function(r) {
+          return React.createElement('option', { key: r.value, value: r.value }, r.label);
+        })
+      ),
+      React.createElement('select', {
+        value: filterStatus,
+        onChange: function(e) { setFilterStatus(e.target.value); },
+        style: Object.assign({}, inputStyle, { width: '140px' })
+      },
+        React.createElement('option', { value: 'all' }, 'All Status'),
+        React.createElement('option', { value: 'active' }, 'Active'),
+        React.createElement('option', { value: 'inactive' }, 'Inactive')
+      )
+    ),
+
+    // Users Table
+    React.createElement('div', { style: cardStyle },
+      React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '13px' } },
+        React.createElement('thead', null,
+          React.createElement('tr', { style: { background: '#f8fafc' } },
+            React.createElement('th', { style: headerCellStyle }, 'Name'),
+            React.createElement('th', { style: headerCellStyle }, 'Email'),
+            React.createElement('th', { style: headerCellStyle }, 'Role'),
+            React.createElement('th', { style: headerCellStyle }, 'Phone'),
+            React.createElement('th', { style: headerCellStyle }, 'Status'),
+            React.createElement('th', { style: headerCellStyle }, 'Sites'),
+            React.createElement('th', { style: Object.assign({}, headerCellStyle, { textAlign: 'center' }) }, 'Actions')
+          )
+        ),
+        React.createElement('tbody', null,
+          filteredUsers.length === 0
+            ? React.createElement('tr', null,
+                React.createElement('td', { colSpan: 7, style: { padding: '40px', textAlign: 'center', color: '#94a3b8' } }, 'No users found')
+              )
+            : filteredUsers.map(function(u) {
+                var userSites = getUserSites(u.id);
+                var isCurrentUser = u.id === state.currentUserId;
+                return React.createElement('tr', {
+                  key: u.id,
+                  style: { borderBottom: '1px solid #f1f5f9', opacity: u.isActive === false ? 0.6 : 1 }
+                },
+                  React.createElement('td', { style: Object.assign({}, cellStyle, { fontWeight: 600 }) }, u.name || '—'),
+                  React.createElement('td', { style: Object.assign({}, cellStyle, { color: '#64748b' }) }, u.email || '—'),
+                  React.createElement('td', { style: cellStyle }, roleBadge(u.role)),
+                  React.createElement('td', { style: Object.assign({}, cellStyle, { color: '#64748b' }) }, u.phone || '—'),
+                  React.createElement('td', { style: cellStyle }, statusBadge(u.isActive)),
+                  React.createElement('td', { style: Object.assign({}, cellStyle, { maxWidth: '180px' }) },
+                    userSites.length > 0
+                      ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px' } },
+                          userSites.map(function(sName, idx) {
+                            return React.createElement('span', {
+                              key: idx,
+                              style: { display: 'inline-block', padding: '2px 8px', borderRadius: '4px', background: '#f1f5f9', fontSize: '11px', color: '#475569' }
+                            }, sName);
+                          })
+                        )
+                      : React.createElement('span', { style: { color: '#cbd5e1', fontSize: '12px' } }, 'None')
+                  ),
+                  React.createElement('td', { style: Object.assign({}, cellStyle, { textAlign: 'center' }) },
+                    React.createElement('div', { style: { display: 'flex', gap: '4px', justifyContent: 'center', flexWrap: 'wrap' } },
+                      React.createElement('button', {
+                        onClick: function() { startEdit(u); },
+                        style: Object.assign({}, btnSmall, { background: '#eef2ff', color: '#6366f1' })
+                      }, 'Edit'),
+                      React.createElement('button', {
+                        onClick: function() { openSiteAssign(u); },
+                        style: Object.assign({}, btnSmall, { background: '#ecfdf5', color: '#059669' })
+                      }, 'Sites'),
+                      !isCurrentUser ? React.createElement('button', {
+                        onClick: function() { handleToggleActive(u); },
+                        style: u.isActive === false
+                          ? Object.assign({}, btnSmall, { background: '#dcfce7', color: '#16a34a' })
+                          : Object.assign({}, btnSmall, { background: '#fee2e2', color: '#dc2626' })
+                      }, u.isActive === false ? 'Reactivate' : 'Deactivate') : null
+                    )
+                  )
+                );
+              })
+        )
+      )
+    ),
+
+    // Modals
+    inviteModal,
+    siteAssignModal,
+    editModal
+  );
+}
+
 // NEW: OrgSettingsScreen
 // ─────────────────────────────────────────────
 function OrgSettingsScreen() {
@@ -3712,19 +5349,19 @@ function PODetailScreen(_ref) {
           }
         }
       }, 'Delete'),
-      po.status === 'pending_approval' && state.currentUser && state.currentUser.role === 'md' && React.createElement('button', {
+      (po.status === 'pending_approval' || po.status === 'pending_md_approval') && state.currentUser && state.currentUser.role === 'md' && React.createElement('button', {
         className: 'btn btn-success',
         onClick: function() {
-          dispatch({ type: 'APPROVE_PO', payload: { poId: po.id } });
+          dispatch({ type: 'MD_APPROVE_PO', payload: { poId: po.id } });
           dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO approved', type: 'success' } });
         }
       }, 'Approve'),
-      po.status === 'pending_approval' && state.currentUser && state.currentUser.role === 'md' && React.createElement('button', {
+      (po.status === 'pending_approval' || po.status === 'pending_md_approval') && state.currentUser && state.currentUser.role === 'md' && React.createElement('button', {
         className: 'btn btn-danger',
         onClick: function() {
           var reason = window.prompt('Rejection reason:');
           if (reason !== null) {
-            dispatch({ type: 'REJECT_PO', payload: { poId: po.id, reason: reason } });
+            dispatch({ type: 'MD_REJECT_PO', payload: { poId: po.id, reason: reason } });
             dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO rejected', type: 'info' } });
           }
         }
@@ -7144,7 +8781,7 @@ function ProcurementPOsScreen() {
                     style: { padding: '6px 12px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 },
                 },
                     React.createElement('option', { value: '' }, 'All Statuses'),
-                    ['draft', 'pending_approval', 'approved', 'issued', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled', 'amendment_pending'].map(function(s) {
+                    ['draft', 'pending_md_approval', 'approved', 'issued', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled', 'amendment_pending'].map(function(s) {
                         return React.createElement('option', { key: s, value: s }, s.replace(/_/g, ' '));
                     })
                 ),
@@ -8798,12 +10435,34 @@ function SystemLogsScreen() {
 // 20. APP COMPONENT (MODIFIED - new routes)
 // ============================================================================
 
+function LoadingScreen() {
+    return React.createElement('div', { className: 'loading-screen' },
+        React.createElement('div', { className: 'loading-spinner' }),
+        React.createElement('div', { style: { fontSize: 22, fontWeight: 700, marginBottom: 8 } }, 'IndentFlow'),
+        React.createElement('div', { style: { fontSize: 14, opacity: 0.8 } }, 'Loading your data...')
+    );
+}
+
+function OfflineBanner() {
+    return React.createElement('div', { className: 'offline-banner' },
+        'Network connection lost. Changes may not be saved. Reconnecting...'
+    );
+}
+
 function App() {
-    const [state, rawDispatch] = useReducer(appReducer, initialState);
-    const route = useHashRoute();
+    var _reducer = useReducer(appReducer, initialState);
+    var state = _reducer[0];
+    var rawDispatch = _reducer[1];
+    var route = useHashRoute();
+    var stateRef = useRef(state);
+
+    // Keep stateRef current for async sync functions
+    React.useEffect(function() {
+        stateRef.current = state;
+    }, [state]);
 
     var dispatch = useCallback(function(action) {
-        var entry = { ts: new Date().toISOString(), type: action.type, userId: state.currentUserId };
+        var entry = { ts: new Date().toISOString(), type: action.type, userId: stateRef.current.currentUserId };
         if (action.payload && action.payload.indentId) entry.indentId = action.payload.indentId;
         if (action.payload && action.payload.poId) entry.poId = action.payload.poId;
         window.NC_MIS_LOG = window.NC_MIS_LOG || [];
@@ -8814,7 +10473,79 @@ function App() {
             console.error('[NC_MIS] Dispatch error:', e);
             throw e;
         }
-    }, [state.currentUserId]);
+
+        // Sync to Supabase in the background (fire-and-forget)
+        supabaseSync(action, stateRef.current).catch(function(err) {
+            console.error('[NC_MIS] Sync failed for ' + action.type + ':', err);
+            rawDispatch({ type: 'SHOW_TOAST', payload: { message: 'Sync error: ' + err.message, type: 'error' } });
+        });
+    }, []);
+
+    // Auth state listener
+    React.useEffect(function() {
+        var subscription = supabaseClient.auth.onAuthStateChange(function(event, session) {
+            if (event === 'SIGNED_IN' && session && session.user) {
+                // User signed in - load data if not already loaded
+                if (!stateRef.current.isAuthenticated) {
+                    rawDispatch({ type: 'SET_LOADING', payload: true });
+                    supabaseClient.schema('core').from('profiles').select('*').eq('id', session.user.id).single()
+                        .then(function(profileRes) {
+                            if (profileRes.error || !profileRes.data) {
+                                console.error('[NC_MIS] Profile not found for auth user');
+                                rawDispatch({ type: 'SET_LOADING', payload: false });
+                                return;
+                            }
+                            var profile = transformProfile(profileRes.data);
+                            loadAllData(session.user.id).then(function(data) {
+                                rawDispatch({ type: 'LOAD_DATA', payload: data });
+                                rawDispatch({ type: 'LOGIN_AS_USER', payload: profile });
+                                var roleRoutes = {
+                                    admin: '#users', site_engineer: '#my-indents', storekeeper: '#store-pending',
+                                    project_manager: '#dashboard', procurement_manager: '#procurement-dashboard',
+                                    procurement_clerk: '#clerk-assigned', md: '#dashboard',
+                                };
+                                if (window.location.hash === '#login' || window.location.hash === '' || !window.location.hash) {
+                                    window.location.hash = roleRoutes[profile.role] || '#dashboard';
+                                }
+                            }).catch(function(err) {
+                                console.error('[NC_MIS] Data load error in auth listener:', err);
+                                rawDispatch({ type: 'SET_LOADING', payload: false });
+                            });
+                        });
+                }
+            } else if (event === 'SIGNED_OUT') {
+                rawDispatch({ type: 'LOGOUT' });
+                rawDispatch({ type: 'SET_LOADING', payload: false });
+                rawDispatch({ type: 'SET_AUTHENTICATED', payload: false });
+                window.location.hash = '#login';
+            }
+        });
+
+        // Check if there is an existing session on app load
+        supabaseClient.auth.getSession().then(function(result) {
+            if (result.data && result.data.session && result.data.session.user) {
+                // Session exists, data will be loaded by onAuthStateChange
+            } else {
+                rawDispatch({ type: 'SET_LOADING', payload: false });
+            }
+        }).catch(function() {
+            rawDispatch({ type: 'SET_LOADING', payload: false });
+        });
+
+        // Online/offline detection
+        var handleOnline = function() { rawDispatch({ type: 'SET_OFFLINE', payload: false }); };
+        var handleOffline = function() { rawDispatch({ type: 'SET_OFFLINE', payload: true }); };
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+
+        return function() {
+            if (subscription && subscription.data && subscription.data.subscription) {
+                subscription.data.subscription.unsubscribe();
+            }
+            window.removeEventListener('online', handleOnline);
+            window.removeEventListener('offline', handleOffline);
+        };
+    }, []);
 
     React.useEffect(function() {
         // Log navigation events
@@ -8824,14 +10555,21 @@ function App() {
         dispatch({ type: 'NAVIGATE', payload: route });
     }, [route]);
 
-    React.useEffect(() => {
+    React.useEffect(function() {
         if (state.toast) {
-            const timer = setTimeout(() => dispatch({ type: 'HIDE_TOAST' }), 3000);
-            return () => clearTimeout(timer);
+            var timer = setTimeout(function() { dispatch({ type: 'HIDE_TOAST' }); }, 3000);
+            return function() { clearTimeout(timer); };
         }
     }, [state.toast]);
 
-    const currentUser = state.users.find(u => u.id === state.currentUserId);
+    var currentUser = state.users.find(function(u) { return u.id === state.currentUserId; });
+
+    // Show loading screen while checking auth or loading data
+    if (state.isLoading) {
+        return React.createElement(AppContext.Provider, { value: [state, dispatch] },
+            React.createElement(LoadingScreen, null)
+        );
+    }
 
     if (!state.currentUserId) {
         return React.createElement(AppContext.Provider, { value: [state, dispatch] },
@@ -8891,6 +10629,7 @@ function App() {
         if (hash === '#md-po-approvals') return { screen: 'md-po-approvals' };
         if (hash === '#pm-reports') return { screen: 'reports' };
         if (hash === '#md-reports') return { screen: 'reports' };
+        if (hash === '#user-management') return { screen: 'user-management' };
         if (hash === '#org-settings') return { screen: 'org-settings' };
         if (hash === '#offices') return { screen: 'offices' };
         if (hash === '#system-logs') return { screen: 'system-logs' };
@@ -8977,6 +10716,8 @@ function App() {
         screenContent = React.createElement(MDPOApprovalsScreen, null);
     } else if (routeInfo.screen === 'reports') {
         screenContent = React.createElement(ReportsScreen, null);
+    } else if (routeInfo.screen === 'user-management') {
+        screenContent = React.createElement(UserManagementScreen, null);
     } else if (routeInfo.screen === 'org-settings') {
         screenContent = React.createElement(OrgSettingsScreen, null);
     } else if (routeInfo.screen === 'offices') {
@@ -8990,11 +10731,12 @@ function App() {
     }
 
     return React.createElement(AppContext.Provider, { value: [state, dispatch] },
-        React.createElement('div', { className: 'app-container' },
+        state.isOffline ? React.createElement(OfflineBanner, null) : null,
+        React.createElement('div', { className: 'app-container', style: state.isOffline ? { marginTop: 36 } : {} },
             React.createElement(Sidebar, {
                 currentRoute: state.currentRoute,
                 currentUserRole: currentUser.role,
-                pendingCount
+                pendingCount: pendingCount
             }),
             React.createElement('div', { className: 'main-container' },
                 React.createElement(Navbar, {
@@ -9083,7 +10825,7 @@ window.NC_MIS_EXPORT_LOGS = function() {
     return 'Exported ' + (window.NC_MIS_LOG || []).length + ' log entries';
 };
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
+var root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(App, null)));
 
     </script>
