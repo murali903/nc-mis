@@ -1323,6 +1323,15 @@ async function loadAllData(userId) {
     };
 }
 
+// ============ UUID GENERATOR ============
+function genUUID() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random()*16|0;
+        return (c === 'x' ? r : (r&0x3|0x8)).toString(16);
+    });
+}
+
 // ============ SUPABASE SYNC LAYER ============
 // Helper: Supabase client returns {data, error} and NEVER throws.
 // This helper checks the error and throws so our catch block fires.
@@ -1351,12 +1360,22 @@ async function supabaseSync(action, state) {
                     description: indent.remarks || indent.description || '',
                     notes: indent.remarks || indent.notes || '',
                 };
-                // Try insert; if it fails (e.g. required_date column missing), retry without it
+                // Try insert; if column missing, retry without problematic columns
                 var indentRes = await supabaseClient.schema('indent_flow').from('indents').insert(indentRow);
-                if (indentRes.error && indentRes.error.message && indentRes.error.message.indexOf('required_date') !== -1) {
-                    console.warn('[NC_MIS] required_date column not found, retrying without it');
-                    delete indentRow.required_date;
+                if (indentRes.error && indentRes.error.message && indentRes.error.code === 'PGRST204') {
+                    var missingCol = indentRes.error.message;
+                    console.warn('[NC_MIS] Column not found, retrying without it:', missingCol);
+                    // Remove columns that might not exist yet
+                    if (missingCol.indexOf('required_date') !== -1) delete indentRow.required_date;
+                    if (missingCol.indexOf('submitted_at') !== -1) delete indentRow.submitted_at;
                     indentRes = await supabaseClient.schema('indent_flow').from('indents').insert(indentRow);
+                    // If still failing with another missing column, try removing both
+                    if (indentRes.error && indentRes.error.code === 'PGRST204') {
+                        console.warn('[NC_MIS] Still failing, removing all optional columns');
+                        delete indentRow.required_date;
+                        delete indentRow.submitted_at;
+                        indentRes = await supabaseClient.schema('indent_flow').from('indents').insert(indentRow);
+                    }
                 }
                 sbCheck(indentRes, 'insert indent');
 
@@ -1673,7 +1692,7 @@ async function supabaseSync(action, state) {
 
             case 'RECEIVE_AGAINST_PO': {
                 var receipts = action.payload.receipts || [];
-                var grnId = 'GRN-' + Date.now();
+                var grnId = genUUID();
                 var grnRows = receipts.map(function(r, ri) {
                     return {
                         id: grnId + '-' + ri,
@@ -1811,7 +1830,7 @@ async function supabaseSync(action, state) {
                 var sourceIndent = (state.indents || []).find(function(i) { return i.id === action.payload.sourceIndentId; });
                 if (sourceIndent) {
                     var clonedBy = action.payload.clonedBy || state.currentUserId;
-                    var cloneId = 'IND-2026-' + String((state.indents || []).length + 1).padStart(4, '0');
+                    var cloneId = genUUID();
                     sbCheck(await supabaseClient.schema('indent_flow').from('indents').insert({
                         id: cloneId,
                         site_id: sourceIndent.siteId,
@@ -1822,7 +1841,7 @@ async function supabaseSync(action, state) {
 
                     var cloneLiRows = sourceIndent.lineItems.map(function(li, idx) {
                         return {
-                            id: 'li-clone-' + Date.now() + '-' + idx,
+                            id: genUUID(),
                             indent_id: cloneId,
                             description: li.name || li.description,
                             qty: li.qty,
@@ -2798,7 +2817,7 @@ function appReducer(state, action) {
             if (!sourceIndent) return state;
 
             const clonedBy = action.payload.clonedBy || state.currentUserId;
-            const newIndentId = `IND-2026-${String(state.indents.length + 1).padStart(4, '0')}`;
+            const newIndentId = genUUID();
             const clonedIndent = {
                 ...sourceIndent,
                 id: newIndentId,
@@ -2819,7 +2838,7 @@ function appReducer(state, action) {
                 revisionCount: 0,
                 lineItems: sourceIndent.lineItems.map((li, idx) => ({
                     ...li,
-                    id: `li-clone-${Date.now()}-${idx}`,
+                    id: genUUID(),
                     received: 0,
                 })),
                 comments: [],
@@ -6448,7 +6467,7 @@ function CreateIndentScreen() {
     if (validItems.length === 0) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please add at least one line item with valid quantity', type: 'error' } }); return; }
 
     const indent = {
-      id: 'IND-' + Date.now(),
+      id: genUUID(),
       displayNumber: 'IND-' + String((state.indents || []).length + 1).padStart(4, '0'),
       siteId: siteId,
       createdBy: user.id,
@@ -6458,7 +6477,7 @@ function CreateIndentScreen() {
       requiredDate: requiredDate || null,
       remarks: remarks,
       lineItems: validItems.map((i, idx) => ({
-        id: 'li-' + Date.now() + '-' + idx,
+        id: genUUID(),
         boqId: i.boqId || null,
         name: i.name || i.description,
         description: i.description || i.name,
@@ -6739,7 +6758,7 @@ function ReviseIndentScreen({ indentId }) {
         indentId: indent.id,
         lineItems: validItems.map((i, idx) => ({
           ...i,
-          id: i.id || ('li-' + Date.now() + '-' + idx),
+          id: i.id || genUUID(),
           qty: parseFloat(i.qty),
           received: i.received || 0,
         })),
@@ -6928,7 +6947,7 @@ function EditDraftScreen({ indentId }) {
         status: status,
         priority: priority,
         remarks: remarks,
-        lineItems: validItems.map((i, idx) => ({ ...i, id: i.id || ('li-' + Date.now() + '-' + idx), qty: parseFloat(i.qty), received: i.received || 0 })),
+        lineItems: validItems.map((i, idx) => ({ ...i, id: i.id || genUUID(), qty: parseFloat(i.qty), received: i.received || 0 })),
       }
     });
 
@@ -9430,7 +9449,7 @@ function StoreNewIndentScreen() {
     const boqItems = state.boqLists[selectedSite] || [];
 
     const handleAddLineItem = () => {
-        const newId = 'li-new-' + Date.now();
+        const newId = genUUID();
         setLineItems([...lineItems, {
             id: newId, description: '', qty: '', unit: 'bags', priority: 'medium',
             isBoq: true, boqItemId: '', nonBoqReason: '', clientApproval: false, trackCostImpact: false
@@ -9461,7 +9480,7 @@ function StoreNewIndentScreen() {
 
     const createIndentObject = (status) => {
         return {
-            id: 'IND-2026-' + String(state.indents.length + 1).padStart(4, '0'),
+            id: genUUID(),
             siteId: selectedSite,
             createdBy: currentUserId,
             createdAt: new Date().toISOString(),
