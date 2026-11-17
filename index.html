@@ -2394,14 +2394,17 @@ async function supabaseSync(action, state, postState) {
         // Persist notifications the reducer created for this action (ids starting 'notif-'
         // are local-only; rows loaded from the DB have UUID ids). The receipt flow inserts
         // its own, richer notification above. Failures are logged, not fatal.
-        if (postState && action.type !== 'RECEIVE_AGAINST_PO') {
+        if (postState) {
             var _preNotifIds = {};
             ((state || {}).notifications || []).forEach(function(n) { _preNotifIds[n.id] = true; });
             var _newNotifs = (postState.notifications || []).filter(function(n) {
                 return n && typeof n.id === 'string' && n.id.indexOf('notif-') === 0 && !_preNotifIds[n.id] && !_syncedNotifIds[n.id] && n.userId;
             });
+            // Mark as handled first, so a later queued sync (e.g. the toast that follows)
+            // does not save the same notification again.
+            _newNotifs.forEach(function(n) { _syncedNotifIds[n.id] = true; });
+            if (action.type === 'RECEIVE_AGAINST_PO') _newNotifs = [];
             if (_newNotifs.length > 0) {
-                _newNotifs.forEach(function(n) { _syncedNotifIds[n.id] = true; });
                 var notifRows = _newNotifs.map(function(n) {
                     return {
                         id: genUUID(),
@@ -3969,7 +3972,21 @@ function LoginPage() {
 function Navbar() {
   const [state, dispatch] = useContext(AppContext);
   const user = state.currentUser;
+  var _notifOpen = useState(false);
+  var notifOpen = _notifOpen[0];
+  var setNotifOpen = _notifOpen[1];
   if (!user) return null;
+
+  // Notifications for the signed-in user, newest first
+  var myNotifs = (state.notifications || []).filter(function(n) { return n.userId === state.currentUserId; })
+    .slice().sort(function(a, b) { return String(b.createdAt || '').localeCompare(String(a.createdAt || '')); });
+  var myUnread = myNotifs.filter(function(n) { return !n.read; }).length;
+  var openNotification = function(n) {
+    if (!n.read) dispatch({ type: 'MARK_NOTIFICATION_READ', payload: n.id });
+    var target = n.link || (n.indentId ? '#indent/' + n.indentId : '');
+    setNotifOpen(false);
+    if (target) window.location.hash = target;
+  };
 
   var handleLogout = function() {
     supabaseClient.auth.signOut().then(function() {
@@ -4000,6 +4017,47 @@ function Navbar() {
       }, 'v3')
     ),
     React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 16 } },
+      React.createElement('div', { style: { position: 'relative' } },
+        React.createElement('button', {
+          onClick: function() { setNotifOpen(!notifOpen); },
+          title: 'Notifications',
+          'aria-label': 'Notifications' + (myUnread ? ' (' + myUnread + ' unread)' : ''),
+          style: {
+            background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)',
+            color: '#fff', padding: '6px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 14,
+          }
+        }, '\uD83D\uDD14', myUnread > 0 ? React.createElement('span', {
+          style: {
+            marginLeft: 6, background: '#ef4444', color: '#fff', borderRadius: 10,
+            padding: '1px 7px', fontSize: 11, fontWeight: 700,
+          }
+        }, myUnread) : null),
+        notifOpen ? React.createElement('div', {
+          style: {
+            position: 'absolute', right: 0, top: 40, width: 340, maxHeight: 420, overflowY: 'auto',
+            background: '#fff', color: '#1e293b', borderRadius: 8, zIndex: 1000,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.25)', border: '1px solid #e2e8f0',
+          }
+        },
+          React.createElement('div', { style: { padding: '10px 14px', fontWeight: 700, fontSize: 14, borderBottom: '1px solid #e2e8f0' } }, 'Notifications'),
+          myNotifs.length === 0
+            ? React.createElement('div', { style: { padding: 16, fontSize: 13, color: '#64748b' } }, 'No notifications yet')
+            : myNotifs.slice(0, 30).map(function(n) {
+                return React.createElement('div', {
+                  key: n.id,
+                  onClick: function() { openNotification(n); },
+                  style: {
+                    padding: '10px 14px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer',
+                    background: n.read ? '#fff' : '#eff6ff',
+                  }
+                },
+                  n.title ? React.createElement('div', { style: { fontSize: 13, fontWeight: 600 } }, n.title) : null,
+                  React.createElement('div', { style: { fontSize: 13 } }, n.message),
+                  React.createElement('div', { style: { fontSize: 11, color: '#94a3b8', marginTop: 2 } }, n.createdAt ? new Date(n.createdAt).toLocaleString() : '')
+                );
+              })
+        ) : null
+      ),
       React.createElement('span', { style: { fontSize: 13, color: '#cbd5e1' } },
         user.name, ' ', getRoleBadge(user.role)
       ),
