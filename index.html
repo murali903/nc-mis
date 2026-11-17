@@ -3361,7 +3361,20 @@ function getSiteName(siteId, sites) {
     return site ? `${site.name} (${site.location})` : 'Unknown';
 }
 
+function getIndentDisplayId(indent, allIndents) {
+  if (!indent) return '';
+  if (indent.displayNumber) return indent.displayNumber;
+  var sorted = (allIndents || []).slice().sort(function(a, b) {
+    return new Date(a.createdAt) - new Date(b.createdAt);
+  });
+  var idx = sorted.findIndex(function(i) { return i.id === indent.id; });
+  return 'IND-' + String(idx + 1).padStart(4, '0');
+}
 
+function escapeHtml(text) {
+  if (!text) return '';
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
 
 // ─────────────────────────────────────────────
 // 1. Toast Component
@@ -3792,7 +3805,7 @@ function CommentThread({ comments, onAddComment }) {
                 new Date(c.createdAt).toLocaleString()
               )
             ),
-            React.createElement('p', { style: { fontSize: 13, color: '#475569', margin: 0 } }, c.text)
+            React.createElement('p', { style: { fontSize: 13, color: '#475569', margin: 0 } }, escapeHtml(c.text || c.content))
           )
         ),
     React.createElement('form', {
@@ -4700,9 +4713,13 @@ function DocumentsSection(_ref) {
   };
 
   var handleView = function(doc) {
+    if (!doc.data) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'File not available — document was uploaded without file data', type: 'error' } });
+      return;
+    }
     var newTab = window.open();
     if (newTab) {
-      newTab.document.write('<html><head><title>' + doc.name + '</title></head><body style="margin:0;">');
+      newTab.document.write('<html><head><title>' + escapeHtml(doc.name) + '</title></head><body style="margin:0;">');
       if (doc.type && doc.type.startsWith('image/')) {
         newTab.document.write('<img src="' + doc.data + '" style="max-width:100%;height:auto;" />');
       } else {
@@ -5325,7 +5342,7 @@ function PODetailScreen(_ref) {
         ) : null,
         po.indentId ? React.createElement('div', { style: { gridColumn: '1 / -1' } },
           React.createElement('span', { style: { color: '#6b7280' } }, 'Linked Indent: '),
-          React.createElement('a', { href: '#indent/' + po.indentId, style: { color: '#3b82f6' } }, po.indentId)
+          React.createElement('a', { href: '#indent/' + po.indentId, style: { color: '#3b82f6' } }, getIndentDisplayId((state.indents || []).find(function(i) { return i.id === po.indentId; }) || { id: po.indentId }, state.indents))
         ) : null
       )
     ),
@@ -5648,7 +5665,7 @@ function IndentDetail({ indentId }) {
       React.createElement('div', null,
         React.createElement('h2', {
           style: { fontSize: 22, fontWeight: 800, color: '#1e293b', marginBottom: 4 }
-        }, 'Indent: ' + indent.id),
+        }, 'Indent: ' + getIndentDisplayId(indent, state.indents)),
         React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
           React.createElement(StatusBadge, { status: indent.status }),
           React.createElement(PriorityBadge, { priority: indent.priority })
@@ -6322,7 +6339,7 @@ function MyIndentsScreen() {
                   style: { borderBottom: '1px solid #f1f5f9', cursor: 'pointer' },
                   onClick: () => { window.location.hash = '#indent/' + indent.id; }
                 },
-                  React.createElement('td', { style: { padding: '12px 16px', fontWeight: 600, color: '#6366f1' } }, indent.id),
+                  React.createElement('td', { style: { padding: '12px 16px', fontWeight: 600, color: '#6366f1' } }, getIndentDisplayId(indent, state.indents)),
                   React.createElement('td', { style: { padding: '12px 16px' } }, getSiteName(indent.siteId, state.sites)),
                   React.createElement('td', { style: { padding: '12px 16px' } }, React.createElement(StatusBadge, { status: indent.status })),
                   React.createElement('td', { style: { padding: '12px 16px' } }, React.createElement(PriorityBadge, { priority: indent.priority })),
@@ -6396,11 +6413,16 @@ function CreateIndentScreen() {
 
   const handleSubmit = (status) => {
     if (!siteId) return;
-    const validItems = items.filter(i => i.description && i.qty);
-    if (validItems.length === 0) return;
+    if (items.some(function(i) { return i.qty && (parseFloat(i.qty) <= 0 || parseFloat(i.qty) > 999999); })) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'All quantities must be between 1 and 999,999', type: 'error' } });
+      return;
+    }
+    const validItems = items.filter(i => i.description && i.qty && parseFloat(i.qty) > 0 && parseFloat(i.qty) <= 999999);
+    if (validItems.length === 0) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please add at least one line item with valid quantity', type: 'error' } }); return; }
 
     const indent = {
       id: 'IND-' + Date.now(),
+      displayNumber: 'IND-' + String((state.indents || []).length + 1).padStart(4, '0'),
       siteId: siteId,
       createdBy: user.id,
       createdAt: new Date().toISOString(),
@@ -6567,8 +6589,13 @@ function CreateIndentScreen() {
             React.createElement('div', null,
               idx === 0 && React.createElement('label', { style: labelStyle }, 'Qty *'),
               React.createElement('input', {
-                type: 'number', value: item.qty, onChange: function(e) { updateItem(idx, 'qty', e.target.value); },
-                placeholder: 'Qty', style: inputStyle, min: 0, step: 'any',
+                type: 'number', value: item.qty, onChange: function(e) {
+                  var val = parseFloat(e.target.value);
+                  if (val < 0) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Quantity cannot be negative', type: 'error' } }); return; }
+                  if (val > 999999) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Quantity too large (max 999,999)', type: 'error' } }); return; }
+                  updateItem(idx, 'qty', e.target.value);
+                },
+                placeholder: 'Qty', style: inputStyle, min: 1, max: 999999, step: 'any',
               })
             ),
             React.createElement('div', null,
@@ -6705,7 +6732,7 @@ function ReviseIndentScreen({ indentId }) {
   return React.createElement('div', { style: { padding: 24, maxWidth: 900, margin: '0 auto' } },
     React.createElement('h2', {
       style: { fontSize: 22, fontWeight: 800, color: '#1e293b', marginBottom: 8 }
-    }, 'Revise Indent: ' + indent.id),
+    }, 'Revise Indent: ' + getIndentDisplayId(indent, state.indents)),
     React.createElement('p', {
       style: { color: '#dc2626', fontSize: 13, marginBottom: 24 }
     }, indent.status === 'returned_for_revision'
@@ -7098,7 +7125,7 @@ function DashboardScreen() {
                     style: { borderBottom: '1px solid #f1f5f9', cursor: 'pointer' },
                     onClick: () => { window.location.hash = '#approve-detail/' + indent.id; }
                   },
-                    React.createElement('td', { style: { padding: '10px 12px', fontWeight: 600, color: '#6366f1' } }, indent.id),
+                    React.createElement('td', { style: { padding: '10px 12px', fontWeight: 600, color: '#6366f1' } }, getIndentDisplayId(indent, state.indents)),
                     React.createElement('td', { style: { padding: '10px 12px' } }, getSiteName(indent.siteId, state.sites)),
                     React.createElement('td', { style: { padding: '10px 12px' } }, React.createElement(PriorityBadge, { priority: indent.priority })),
                     React.createElement('td', { style: { padding: '10px 12px' } }, getUserName(indent.createdBy, state.users)),
@@ -7273,7 +7300,7 @@ function ApprovalsScreen() {
                     })
                   ),
                   React.createElement('td', { style: { padding: '12px 16px', fontWeight: 600 } },
-                    React.createElement('a', { href: '#approve-detail/' + indent.id, style: { color: '#6366f1', textDecoration: 'none', cursor: 'pointer' } }, indent.id)
+                    React.createElement('a', { href: '#approve-detail/' + indent.id, style: { color: '#6366f1', textDecoration: 'none', cursor: 'pointer' } }, getIndentDisplayId(indent, state.indents))
                   ),
                   React.createElement('td', { style: { padding: '12px 16px' } }, getSiteName(indent.siteId, state.sites)),
                   React.createElement('td', { style: { padding: '12px 16px' } }, React.createElement(PriorityBadge, { priority: indent.priority })),
@@ -7513,7 +7540,7 @@ function ApprovedScreen() {
                   style: { borderBottom: '1px solid #f1f5f9', cursor: 'pointer' },
                   onClick: () => { window.location.hash = '#indent/' + indent.id; }
                 },
-                  React.createElement('td', { style: { padding: '12px 16px', fontWeight: 600, color: '#6366f1' } }, indent.id),
+                  React.createElement('td', { style: { padding: '12px 16px', fontWeight: 600, color: '#6366f1' } }, getIndentDisplayId(indent, state.indents)),
                   React.createElement('td', { style: { padding: '12px 16px' } }, getSiteName(indent.siteId, state.sites)),
                   React.createElement('td', { style: { padding: '12px 16px' } }, React.createElement(PriorityBadge, { priority: indent.priority })),
                   React.createElement('td', { style: { padding: '12px 16px' } }, getUserName(indent.createdBy, state.users)),
@@ -7585,7 +7612,7 @@ function AllIndentsScreen() {
                   style: { borderBottom: '1px solid #f1f5f9', cursor: 'pointer' },
                   onClick: () => { window.location.hash = indentRoute; }
                 },
-                  React.createElement('td', { style: { padding: '12px 16px', fontWeight: 600, color: '#6366f1' } }, indent.id),
+                  React.createElement('td', { style: { padding: '12px 16px', fontWeight: 600, color: '#6366f1' } }, getIndentDisplayId(indent, state.indents)),
                   React.createElement('td', { style: { padding: '12px 16px' } }, getSiteName(indent.siteId, state.sites)),
                   React.createElement('td', { style: { padding: '12px 16px' } }, React.createElement(StatusBadge, { status: indent.status })),
                   React.createElement('td', { style: { padding: '12px 16px' } }, React.createElement(PriorityBadge, { priority: indent.priority })),
@@ -7805,7 +7832,7 @@ function EscalatedScreen() {
                                     onClick: () => { window.location.hash = '#approve-detail/' + indent.id; }
                                 },
                                     React.createElement('td', null,
-                                        React.createElement('a', { href: '#approve-detail/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, indent.id)
+                                        React.createElement('a', { href: '#approve-detail/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                                     ),
                                     React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
                                     React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
@@ -7880,7 +7907,7 @@ function ProcurementApprovedScreen() {
                             : approvedIndents.map(indent =>
                                 React.createElement('tr', { key: indent.id },
                                     React.createElement('td', null,
-                                        React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, indent.id)
+                                        React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                                     ),
                                     React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
                                     React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
@@ -7986,7 +8013,7 @@ function ProcurementProgressScreen() {
                             onClick: !showActions ? () => { window.location.hash = '#indent/' + indent.id; } : undefined
                         },
                             React.createElement('td', null,
-                                React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, indent.id)
+                                React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                             ),
                             React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
                             React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
@@ -8070,7 +8097,7 @@ function ClerkAssignedScreen() {
                     : clerkIndents.map(indent =>
                         React.createElement('tr', { key: indent.id },
                             React.createElement('td', null,
-                                React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, indent.id)
+                                React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                             ),
                             React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
                             React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
@@ -8285,7 +8312,7 @@ function ProcurementDashboardScreen() {
                         onClick: function() { window.location.hash = '#indent/' + item.id; }
                       },
                         React.createElement('td', null,
-                          React.createElement('a', { href: '#indent/' + item.id, style: { textDecoration: 'none', color: '#2563eb' } }, item.id)
+                          React.createElement('a', { href: '#indent/' + item.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(item, state.indents))
                         ),
                         React.createElement('td', null, getSiteName(item.siteId, state.sites)),
                         React.createElement('td', null, React.createElement(PriorityBadge, { priority: item.priority })),
@@ -8326,7 +8353,7 @@ function ProcurementDashboardScreen() {
                                 onClick: () => { window.location.hash = '#indent/' + item.indent.id; }
                             },
                                 React.createElement('td', null,
-                                    React.createElement('a', { href: '#indent/' + item.indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, item.indent.id)
+                                    React.createElement('a', { href: '#indent/' + item.indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(item.indent, state.indents))
                                 ),
                                 React.createElement('td', null, getSiteName(item.indent.siteId, state.sites)),
                                 React.createElement('td', null, React.createElement(StatusBadge, { status: item.indent.status })),
@@ -8479,6 +8506,7 @@ function CreatePOScreen({ indentId }) {
 
     const handleSaveDraft = () => {
         if (!vendorId) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please select a vendor', type: 'error' } }); return; }
+        if (!indent.lineItems || indent.lineItems.length === 0) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Cannot create PO — indent has no line items', type: 'error' } }); return; }
         const po = buildPO();
         dispatch({ type: 'CREATE_PO', payload: { po, indentId: indent.id } });
         dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO draft saved', type: 'success' } });
@@ -8487,6 +8515,7 @@ function CreatePOScreen({ indentId }) {
 
     const handleRequestApproval = () => {
         if (!vendorId) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please select a vendor', type: 'error' } }); return; }
+        if (!indent.lineItems || indent.lineItems.length === 0) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Cannot create PO — indent has no line items', type: 'error' } }); return; }
         const po = buildPO();
         dispatch({ type: 'CREATE_PO', payload: { po, indentId: indent.id } });
         dispatch({ type: 'REQUEST_MD_PO_APPROVAL', payload: { poId: po.id, indentId: indent.id } });
@@ -8508,7 +8537,7 @@ function CreatePOScreen({ indentId }) {
     return React.createElement('div', null,
         React.createElement('div', { className: 'card' },
             React.createElement('div', { className: 'card-header' },
-                React.createElement('div', { className: 'card-title' }, 'Create Purchase Order for ' + indentId)
+                React.createElement('div', { className: 'card-title' }, 'Create Purchase Order for ' + getIndentDisplayId(indent, state.indents))
             ),
 
             // PO info
@@ -8519,7 +8548,7 @@ function CreatePOScreen({ indentId }) {
                 ),
                 React.createElement('div', { className: 'info-field' },
                     React.createElement('div', { className: 'info-label' }, 'Indent'),
-                    React.createElement('div', { className: 'info-value' }, indent.id)
+                    React.createElement('div', { className: 'info-value' }, getIndentDisplayId(indent, state.indents))
                 )
             ),
 
@@ -8810,7 +8839,7 @@ function ProcurementPOsScreen() {
                             React.createElement('td', { style: { fontWeight: '600' } }, React.createElement('a', { href: '#po/' + po.id, style: { color: '#3b82f6', textDecoration: 'none' } }, po.id)),
                             React.createElement('td', null, po.vendorName),
                             React.createElement('td', null,
-                                React.createElement('a', { href: '#indent/' + po.indentId, style: { textDecoration: 'none', color: '#2563eb' } }, po.indentId)
+                                React.createElement('a', { href: '#indent/' + po.indentId, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId((state.indents || []).find(function(i) { return i.id === po.indentId; }) || { id: po.indentId }, state.indents))
                             ),
                             React.createElement('td', null, (po.lineItems || []).length),
                             React.createElement('td', { style: { fontWeight: '600' } }, 'Rs. ' + (po.totalAmount || 0).toLocaleString()),
@@ -9132,7 +9161,7 @@ function MDEscalationsScreen() {
                 React.createElement('div', { key: indent.id, style: { padding: '20px', borderBottom: '1px solid #e2e8f0' } },
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' } },
                         React.createElement('div', null,
-                            React.createElement('a', { href: '#indent/' + indent.id, style: { fontSize: '16px', fontWeight: '600', color: '#2563eb', textDecoration: 'none' } }, indent.id),
+                            React.createElement('a', { href: '#indent/' + indent.id, style: { fontSize: '16px', fontWeight: '600', color: '#2563eb', textDecoration: 'none' } }, getIndentDisplayId(indent, state.indents)),
                             React.createElement('div', { style: { fontSize: '13px', color: '#64748b', marginTop: '4px' } },
                                 'Site: ' + getSiteName(indent.siteId, state.sites) + ' | By: ' + getUserName(indent.createdBy, state.users) + ' | Items: ' + indent.lineItems.length
                             )
@@ -9224,7 +9253,7 @@ function MDPOApprovalsScreen() {
                             React.createElement('div', { style: { fontSize: '16px', fontWeight: '600', color: '#1e293b' } }, po.id),
                             React.createElement('div', { style: { fontSize: '13px', color: '#64748b', marginTop: '4px' } },
                                 'Indent: ',
-                                React.createElement('a', { href: '#indent/' + po.indentId, style: { color: '#2563eb' } }, po.indentId),
+                                React.createElement('a', { href: '#indent/' + po.indentId, style: { color: '#2563eb' } }, getIndentDisplayId((state.indents || []).find(function(i) { return i.id === po.indentId; }) || { id: po.indentId }, state.indents)),
                                 ' | Vendor: ' + po.vendorName,
                                 po.paymentTerms ? ' | Terms: ' + po.paymentTerms : ''
                             )
@@ -9333,7 +9362,7 @@ function StorePendingScreen() {
                     : pendingIndents.map(indent =>
                         React.createElement('tr', { key: indent.id },
                             React.createElement('td', null,
-                                React.createElement('a', { href: '#receipt/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, indent.id)
+                                React.createElement('a', { href: '#receipt/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                             ),
                             React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
                             React.createElement('td', null, React.createElement(StatusBadge, { status: indent.status })),
@@ -9656,7 +9685,7 @@ function StoreHistoryScreen() {
                     : historyIndents.map(indent =>
                         React.createElement('tr', { key: indent.id },
                             React.createElement('td', null,
-                                React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, indent.id)
+                                React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                             ),
                             React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
                             React.createElement('td', null,
@@ -9716,7 +9745,7 @@ function StoreAllScreen() {
                                 onClick: () => { window.location.hash = '#indent/' + indent.id; }
                             },
                                 React.createElement('td', null,
-                                    React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, indent.id)
+                                    React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                                 ),
                                 React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
                                 React.createElement('td', null, React.createElement(StatusBadge, { status: indent.status })),
@@ -9955,7 +9984,7 @@ function CompletedOrdersScreen() {
                                 onClick: () => { window.location.hash = '#indent/' + indent.id; }
                             },
                                 React.createElement('td', null,
-                                    React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, indent.id)
+                                    React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                                 ),
                                 React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
                                 React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
@@ -10135,7 +10164,7 @@ function IndentAgingReport() {
                                 onClick: () => { window.location.hash = '#indent/' + indent.id; }
                             },
                                 React.createElement('td', null,
-                                    React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, indent.id)
+                                    React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                                 ),
                                 React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
                                 React.createElement('td', null, React.createElement(StatusBadge, { status: indent.status })),
