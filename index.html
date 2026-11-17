@@ -1266,7 +1266,7 @@ async function loadAllData(userId) {
         supabaseClient.schema('core').from('sites').select('*').eq('is_active', true),
         supabaseClient.schema('core').from('site_assignments').select('*'),
         supabaseClient.schema('core').from('vendors').select('*').eq('is_active', true),
-        supabaseClient.schema('indent_flow').from('boq_lists').select('*'),
+        supabaseClient.schema('core').from('boq_lists').select('*'),
         supabaseClient.schema('indent_flow').from('indents').select('*, indent_line_items(*), indent_activity(*), indent_comments(*), indent_documents(*)'),
         supabaseClient.schema('indent_flow').from('purchase_orders').select('*, po_line_items(*), po_version_history(*)'),
         supabaseClient.schema('indent_flow').from('grns').select('*, grn_items(*)'),
