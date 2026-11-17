@@ -1650,7 +1650,7 @@ async function supabaseSync(action, state) {
                     payment_terms: po.paymentTerms || '',
                     delivery_address: po.deliveryAddress || '',
                     notes: po.notes || '',
-                    office_id: po.officeId || '',
+                    office_id: po.officeId || null,
                     total_amount: po.totalAmount || 0,
                 };
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders').insert(poRow), 'insert PO');
@@ -1694,7 +1694,6 @@ async function supabaseSync(action, state) {
                 if (updates.notes !== undefined) dbUpdates.notes = updates.notes;
                 if (updates.officeId !== undefined) dbUpdates.office_id = updates.officeId;
                 dbUpdates.updated_at = new Date().toISOString();
-                dbUpdates.updated_by = state.currentUserId;
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update(dbUpdates).eq('id', action.payload.poId), 'update PO');
@@ -2125,7 +2124,7 @@ async function supabaseSync(action, state) {
                     id: action.payload.id,
                     name: action.payload.name || '',
                     location: action.payload.location || '',
-                    office_id: action.payload.officeId || '',
+                    office_id: action.payload.officeId || null,
                 };
                 await supabaseClient.schema('core').from('sites').insert(siteRow);
                 break;
