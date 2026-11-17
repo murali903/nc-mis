@@ -1649,7 +1649,7 @@ async function supabaseSync(action, state) {
                             description: li.description || '',
                             quantity: li.quantity || li.qty || 0,
                             unit: li.unit || '',
-                            unit_price: li.unitPrice || 0,
+                            unit_price: li.unitPrice || li.rate || 0,
                             gst_percent: li.gstPercent !== undefined ? li.gstPercent : 18,
                             hsn: li.hsn || '',
                         };
@@ -1665,7 +1665,7 @@ async function supabaseSync(action, state) {
                     indent_id: action.payload.indentId,
                     action: 'PO Created',
                     user_id: state.currentUserId,
-                    note: 'PO ' + po.id + ' created',
+                    note: 'PO ' + (po.poNumber || po.id) + ' created',
                 }), 'PO create activity');
                 break;
             }
@@ -1695,7 +1695,7 @@ async function supabaseSync(action, state) {
                             description: li.description || '',
                             quantity: li.quantity || li.qty || 0,
                             unit: li.unit || '',
-                            unit_price: li.unitPrice || 0,
+                            unit_price: li.unitPrice || li.rate || 0,
                             gst_percent: li.gstPercent !== undefined ? li.gstPercent : 18,
                             hsn: li.hsn || '',
                         };
@@ -3007,7 +3007,7 @@ function appReducer(state, action) {
                             ...ind,
                             status: 'po_draft',
                             linkedPO: po.id,
-                            activityLog: addActivityLog(ind, 'PO Created', state.currentUserId, `PO ${po.id} created`)
+                            activityLog: addActivityLog(ind, 'PO Created', state.currentUserId, 'PO ' + (po.poNumber || po.id) + ' created')
                         }
                         : ind
                 ),
@@ -5115,7 +5115,7 @@ function IndentActionButtons(_ref) {
   if (role === 'site_engineer' && status === 'draft') {
     return React.createElement('div', { style: buttonWrap },
       React.createElement('button', { className: 'btn btn-success', onClick: function() {
-        if (!indent.items || indent.items.length === 0) {
+        if (!indent.lineItems || indent.lineItems.length === 0) {
           dispatch({ type: 'SHOW_TOAST', payload: { message: 'Cannot submit: indent has no line items', type: 'error' } });
           return;
         }
@@ -8915,8 +8915,10 @@ function CreatePOScreen({ indentId }) {
 
     const buildPO = () => {
         const vendor = state.vendors.find(v => v.id === vendorId);
+        const poUUID = crypto.randomUUID ? crypto.randomUUID() : ('po-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));
         return {
-            id: poNumber,
+            id: poUUID,
+            poNumber: poNumber,
             indentId: indent.id,
             vendorId: vendorId,
             vendorName: vendor ? vendor.name : 'Unknown',
