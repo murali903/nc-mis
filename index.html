@@ -1720,7 +1720,7 @@ async function supabaseSync(action, state) {
 
             case 'SUBMIT_PO_FOR_APPROVAL': {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'pending_md_approval', updated_at: new Date().toISOString() })
+                    .update({ status: 'pending_approval', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'submit PO');
                 break;
             }
@@ -2202,7 +2202,7 @@ async function supabaseSync(action, state) {
 
             case 'REQUEST_MD_PO_APPROVAL': {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'pending_md_approval', updated_at: new Date().toISOString() })
+                    .update({ status: 'pending_approval', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'request MD PO approval');
                 break;
             }
@@ -3345,7 +3345,7 @@ function appReducer(state, action) {
             return {
                 ...state,
                 purchaseOrders: state.purchaseOrders.map(function(po) {
-                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'pending_md_approval', submittedAt: new Date().toISOString(), submittedBy: state.currentUserId }) : po;
+                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'pending_approval', submittedAt: new Date().toISOString(), submittedBy: state.currentUserId }) : po;
                 }),
                 indents: state.indents.map(function(ind) {
                     return ind.linkedPO === action.payload.poId
@@ -3357,7 +3357,7 @@ function appReducer(state, action) {
 
         case 'APPROVE_PO': {
             var _apo = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
-            if (!_apo || (_apo.status !== 'pending_approval' && _apo.status !== 'pending_md_approval')) return state;
+            if (!_apo || (_apo.status !== 'pending_approval' && _apo.status !== 'pending_approval')) return state;
             return {
                 ...state,
                 purchaseOrders: state.purchaseOrders.map(function(po) {
@@ -3505,7 +3505,7 @@ function appReducer(state, action) {
             return {
                 ...state,
                 purchaseOrders: state.purchaseOrders.map(function(po) {
-                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'pending_md_approval', submittedAt: new Date().toISOString(), submittedBy: state.currentUserId }) : po;
+                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'pending_approval', submittedAt: new Date().toISOString(), submittedBy: state.currentUserId }) : po;
                 }),
                 indents: state.indents.map(function(ind) {
                     return ind.linkedPO === action.payload.poId || ind.id === action.payload.indentId
@@ -3517,7 +3517,7 @@ function appReducer(state, action) {
 
         case 'MD_APPROVE_PO': {
             var _mdapo = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
-            if (!_mdapo || _mdapo.status !== 'pending_md_approval') return state;
+            if (!_mdapo || _mdapo.status !== 'pending_approval') return state;
             return {
                 ...state,
                 purchaseOrders: state.purchaseOrders.map(function(po) {
@@ -4041,7 +4041,7 @@ function StatusBadge({ status }) {
     closed: { bg: '#e2e8f0', color: '#475569' },
     cancelled: { bg: '#fee2e2', color: '#dc2626' },
     amendment_pending: { bg: '#fce7f3', color: '#be185d' },
-    pending_md_approval: { bg: '#ede9fe', color: '#6d28d9' },
+    pending_approval: { bg: '#ede9fe', color: '#6d28d9' },
   };
   const s = styles[status] || styles.draft;
   return React.createElement('span', {
@@ -5821,14 +5821,14 @@ function PODetailScreen(_ref) {
           }
         }
       }, 'Delete'),
-      (po.status === 'pending_approval' || po.status === 'pending_md_approval') && state.currentUser && state.currentUser.role === 'md' && React.createElement('button', {
+      (po.status === 'pending_approval' || po.status === 'pending_approval') && state.currentUser && state.currentUser.role === 'md' && React.createElement('button', {
         className: 'btn btn-success',
         onClick: function() {
           dispatch({ type: 'MD_APPROVE_PO', payload: { poId: po.id } });
           dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO approved', type: 'success' } });
         }
       }, 'Approve'),
-      (po.status === 'pending_approval' || po.status === 'pending_md_approval') && state.currentUser && state.currentUser.role === 'md' && React.createElement('button', {
+      (po.status === 'pending_approval' || po.status === 'pending_approval') && state.currentUser && state.currentUser.role === 'md' && React.createElement('button', {
         className: 'btn btn-danger',
         onClick: function() {
           var reason = window.prompt('Rejection reason:');
@@ -7711,7 +7711,7 @@ function DashboardScreen() {
   // MD Dashboard
   if (role === 'md') {
     const allIndents = state.indents;
-    const pendingPOs = (state.purchaseOrders || []).filter(po => po.status === 'pending_md_approval');
+    const pendingPOs = (state.purchaseOrders || []).filter(po => po.status === 'pending_approval');
     const stats = [
       { label: 'Total Indents', value: allIndents.length, color: '#6366f1', bg: '#eef2ff', route: '#all-indents' },
       { label: 'Submitted', value: allIndents.filter(i => i.status === 'pending_approval').length, color: '#f59e0b', bg: '#fef9c3', route: '#approvals' },
@@ -8886,7 +8886,7 @@ function ProcurementDashboardScreen() {
 
     const totalApproved = state.indents.filter(i => i.status === 'approved').length;
     const inProcurement = state.indents.filter(i => i.status === 'in_procurement').length;
-    const posPendingMD = state.purchaseOrders.filter(po => po.status === 'pending_md_approval').length;
+    const posPendingMD = state.purchaseOrders.filter(po => po.status === 'pending_approval').length;
     const posIssuedThisMonth = state.purchaseOrders.filter(po =>
         po.status === 'issued' && new Date(po.createdAt) >= thisMonthStart
     ).length;
@@ -9570,7 +9570,7 @@ function ProcurementPOsScreen() {
                     style: { padding: '6px 12px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 },
                 },
                     React.createElement('option', { value: '' }, 'All Statuses'),
-                    ['draft', 'pending_md_approval', 'approved', 'issued', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled', 'amendment_pending'].map(function(s) {
+                    ['draft', 'pending_approval', 'approved', 'issued', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled', 'amendment_pending'].map(function(s) {
                         return React.createElement('option', { key: s, value: s }, s.replace(/_/g, ' '));
                     })
                 ),
@@ -9985,7 +9985,7 @@ function MDPOApprovalsScreen() {
     const [rejectPoId, setRejectPoId] = useState(null);
     const [rejectReason, setRejectReason] = useState('');
 
-    const pendingPOs = state.purchaseOrders.filter(po => po.status === 'pending_md_approval').sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    const pendingPOs = state.purchaseOrders.filter(po => po.status === 'pending_approval').sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 
     const handleApprovePO = (poId) => {
         dispatch({ type: 'MD_APPROVE_PO', payload: { poId } });
