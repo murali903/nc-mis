@@ -1083,6 +1083,7 @@ function transformIndent(row) {
         createdAt: row.created_at,
         status: row.status,
         priority: row.priority || 'normal',
+        requiredDate: row.required_date || undefined,
         assignedTo: row.assigned_to || undefined,
         submittedAt: row.submitted_at || undefined,
         rejectionReason: row.rejection_reason || undefined,
@@ -1095,15 +1096,18 @@ function transformIndent(row) {
         isRevised: row.is_revised || undefined,
         revisionCount: row.revision_count || 0,
         description: row.description || '',
+        remarks: row.notes || row.description || '',
         notes: row.notes || '',
         lineItems: (row.indent_line_items || []).map(function(li) {
             return {
                 id: li.id,
-                description: li.description,
+                name: li.description || '',
+                description: li.description || '',
                 qty: li.qty || li.quantity || 0,
                 unit: li.unit || '',
                 received: li.received || 0,
                 isBoq: li.is_boq !== undefined ? li.is_boq : true,
+                isBoqItem: li.is_boq !== undefined ? li.is_boq : true,
                 nonBoqReason: li.non_boq_reason || undefined,
             };
         }),
@@ -1320,6 +1324,16 @@ async function loadAllData(userId) {
 }
 
 // ============ SUPABASE SYNC LAYER ============
+// Helper: Supabase client returns {data, error} and NEVER throws.
+// This helper checks the error and throws so our catch block fires.
+function sbCheck(result, label) {
+    if (result.error) {
+        console.error('[NC_MIS] Supabase error in ' + label + ':', result.error);
+        throw new Error(label + ': ' + result.error.message + (result.error.details ? ' (' + result.error.details + ')' : ''));
+    }
+    return result;
+}
+
 async function supabaseSync(action, state) {
     try {
         switch (action.type) {
@@ -1332,25 +1346,34 @@ async function supabaseSync(action, state) {
                     created_at: indent.createdAt,
                     status: indent.status,
                     priority: indent.priority || 'normal',
-                    description: indent.description || '',
-                    notes: indent.notes || '',
+                    required_date: indent.requiredDate || null,
+                    submitted_at: indent.status === 'pending_approval' ? indent.createdAt : null,
+                    description: indent.remarks || indent.description || '',
+                    notes: indent.remarks || indent.notes || '',
                 };
-                await supabaseClient.schema('indent_flow').from('indents').insert(indentRow);
+                // Try insert; if it fails (e.g. required_date column missing), retry without it
+                var indentRes = await supabaseClient.schema('indent_flow').from('indents').insert(indentRow);
+                if (indentRes.error && indentRes.error.message && indentRes.error.message.indexOf('required_date') !== -1) {
+                    console.warn('[NC_MIS] required_date column not found, retrying without it');
+                    delete indentRow.required_date;
+                    indentRes = await supabaseClient.schema('indent_flow').from('indents').insert(indentRow);
+                }
+                sbCheck(indentRes, 'insert indent');
 
                 if (indent.lineItems && indent.lineItems.length > 0) {
                     var liRows = indent.lineItems.map(function(li) {
                         return {
                             id: li.id,
                             indent_id: indent.id,
-                            description: li.description,
+                            description: li.name || li.description,
                             qty: li.qty,
                             unit: li.unit,
                             received: li.received || 0,
-                            is_boq: li.isBoq !== false,
+                            is_boq: li.isBoqItem !== false && li.isBoq !== false,
                             non_boq_reason: li.nonBoqReason || null,
                         };
                     });
-                    await supabaseClient.schema('indent_flow').from('indent_line_items').insert(liRows);
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items').insert(liRows), 'insert line items');
                 }
 
                 if (indent.activityLog && indent.activityLog.length > 0) {
@@ -1363,22 +1386,23 @@ async function supabaseSync(action, state) {
                             note: a.note || '',
                         };
                     });
-                    await supabaseClient.schema('indent_flow').from('indent_activity').insert(actRows);
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert(actRows), 'insert activity');
                 }
+                console.log('[NC_MIS] Indent ' + indent.id + ' synced to Supabase successfully');
                 break;
             }
 
             case 'APPROVE_INDENT': {
-                await supabaseClient.schema('indent_flow').from('indents')
+                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
                     .update({ status: 'approved' })
-                    .eq('id', action.payload.indentId);
+                    .eq('id', action.payload.indentId), 'approve indent');
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
                     action: 'Approved',
                     user_id: action.payload.approvedBy || state.currentUserId,
                     note: action.payload.note || '',
-                });
+                }), 'approve activity');
                 break;
             }
 
@@ -1387,53 +1411,53 @@ async function supabaseSync(action, state) {
                 var newStatus = isReturn ? 'returned_for_revision' : 'rejected';
                 var actionLabel = isReturn ? 'Returned for Revision' : 'Rejected';
 
-                await supabaseClient.schema('indent_flow').from('indents')
+                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
                     .update({ status: newStatus, rejection_reason: action.payload.reason || '' })
-                    .eq('id', action.payload.indentId);
+                    .eq('id', action.payload.indentId), 'reject indent');
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
                     action: actionLabel,
                     user_id: action.payload.rejectedBy || state.currentUserId,
                     note: action.payload.reason || '',
-                });
+                }), 'reject activity');
                 break;
             }
 
             case 'ESCALATE_TO_MD': {
-                await supabaseClient.schema('indent_flow').from('indents')
+                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
                     .update({ status: 'escalated_to_md', escalation_remarks: action.payload.remarks || '' })
-                    .eq('id', action.payload.indentId);
+                    .eq('id', action.payload.indentId), 'escalate indent');
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
                     action: 'Escalated to MD',
                     user_id: state.currentUserId,
                     note: action.payload.remarks || '',
-                });
+                }), 'escalate activity');
                 break;
             }
 
             case 'ASSIGN_INDENT': {
-                await supabaseClient.schema('indent_flow').from('indents')
+                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
                     .update({ status: 'in_procurement', assigned_to: action.payload.userId })
-                    .eq('id', action.payload.indentId);
+                    .eq('id', action.payload.indentId), 'assign indent');
 
                 var assigneeName = '';
                 var assigneeUser = (state.users || []).find(function(u) { return u.id === action.payload.userId; });
                 if (assigneeUser) assigneeName = assigneeUser.name;
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
                     action: 'Assigned to Procurement',
                     user_id: action.payload.assignedBy || state.currentUserId,
                     note: 'Assigned to ' + assigneeName,
-                });
+                }), 'assign activity');
                 break;
             }
 
             case 'REVISE_RESUBMIT': {
-                await supabaseClient.schema('indent_flow').from('indents')
+                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
                     .update({
                         status: 'pending_approval',
                         is_revised: true,
@@ -1441,57 +1465,57 @@ async function supabaseSync(action, state) {
                         notes: action.payload.notes || '',
                         submitted_at: new Date().toISOString(),
                     })
-                    .eq('id', action.payload.indentId);
+                    .eq('id', action.payload.indentId), 'revise indent');
 
                 // Delete old line items and insert new ones
-                await supabaseClient.schema('indent_flow').from('indent_line_items')
-                    .delete().eq('indent_id', action.payload.indentId);
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items')
+                    .delete().eq('indent_id', action.payload.indentId), 'delete old line items');
 
                 if (action.payload.lineItems && action.payload.lineItems.length > 0) {
                     var revLiRows = action.payload.lineItems.map(function(li) {
                         return {
                             id: li.id,
                             indent_id: action.payload.indentId,
-                            description: li.description,
+                            description: li.name || li.description,
                             qty: li.qty,
                             unit: li.unit,
                             received: li.received || 0,
-                            is_boq: li.isBoq !== false,
+                            is_boq: li.isBoqItem !== false && li.isBoq !== false,
                             non_boq_reason: li.nonBoqReason || null,
                         };
                     });
-                    await supabaseClient.schema('indent_flow').from('indent_line_items').insert(revLiRows);
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items').insert(revLiRows), 'insert revised line items');
                 }
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
                     action: 'Revised & Resubmitted',
                     user_id: action.payload.revisedBy,
                     note: action.payload.remarks || '',
-                });
+                }), 'revise activity');
 
                 if (action.payload.remarks) {
-                    await supabaseClient.schema('indent_flow').from('indent_comments').insert({
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_comments').insert({
                         indent_id: action.payload.indentId,
                         user_id: action.payload.revisedBy,
                         content: action.payload.remarks,
-                    });
+                    }), 'revise comment');
                 }
                 break;
             }
 
             case 'ADD_COMMENT': {
-                await supabaseClient.schema('indent_flow').from('indent_comments').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_comments').insert({
                     indent_id: action.payload.indentId,
                     user_id: action.payload.author,
                     content: action.payload.text,
-                });
+                }), 'add comment');
                 break;
             }
 
             case 'ADD_DOCUMENT': {
                 var doc = action.payload.document;
-                await supabaseClient.schema('indent_flow').from('indent_documents').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_documents').insert({
                     id: doc.id,
                     indent_id: action.payload.indentId,
                     file_name: doc.name,
@@ -1500,27 +1524,27 @@ async function supabaseSync(action, state) {
                     uploaded_by: state.currentUserId,
                     size: doc.size || 0,
                     mime_type: doc.mimeType || '',
-                });
+                }), 'add document');
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
                     action: 'Document Uploaded',
                     user_id: state.currentUserId,
                     note: doc.name + ' (' + (doc.category || 'general') + ')',
-                });
+                }), 'doc upload activity');
                 break;
             }
 
             case 'DELETE_DOCUMENT': {
-                await supabaseClient.schema('indent_flow').from('indent_documents')
-                    .delete().eq('id', action.payload.documentId);
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_documents')
+                    .delete().eq('id', action.payload.documentId), 'delete document');
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
                     action: 'Document Removed',
                     user_id: state.currentUserId,
                     note: action.payload.documentName || '',
-                });
+                }), 'doc delete activity');
                 break;
             }
 
@@ -1539,7 +1563,7 @@ async function supabaseSync(action, state) {
                     notes: po.notes || '',
                     office_id: po.officeId || '',
                 };
-                await supabaseClient.schema('indent_flow').from('purchase_orders').insert(poRow);
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders').insert(poRow), 'insert PO');
 
                 if (po.lineItems && po.lineItems.length > 0) {
                     var poLiRows = po.lineItems.map(function(li) {
@@ -1554,19 +1578,19 @@ async function supabaseSync(action, state) {
                             hsn: li.hsn || '',
                         };
                     });
-                    await supabaseClient.schema('indent_flow').from('po_line_items').insert(poLiRows);
+                    sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items').insert(poLiRows), 'insert PO line items');
                 }
 
-                await supabaseClient.schema('indent_flow').from('indents')
+                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
                     .update({ status: 'po_draft', linked_po: po.id })
-                    .eq('id', action.payload.indentId);
+                    .eq('id', action.payload.indentId), 'link PO to indent');
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
                     action: 'PO Created',
                     user_id: state.currentUserId,
                     note: 'PO ' + po.id + ' created',
-                });
+                }), 'PO create activity');
                 break;
             }
 
@@ -1582,12 +1606,12 @@ async function supabaseSync(action, state) {
                 dbUpdates.updated_at = new Date().toISOString();
                 dbUpdates.updated_by = state.currentUserId;
 
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update(dbUpdates).eq('id', action.payload.poId);
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update(dbUpdates).eq('id', action.payload.poId), 'update PO');
 
                 if (updates.lineItems) {
-                    await supabaseClient.schema('indent_flow').from('po_line_items')
-                        .delete().eq('po_id', action.payload.poId);
+                    sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items')
+                        .delete().eq('po_id', action.payload.poId), 'delete old PO line items');
                     var updPoLi = updates.lineItems.map(function(li) {
                         return {
                             id: li.id,
@@ -1600,50 +1624,50 @@ async function supabaseSync(action, state) {
                             hsn: li.hsn || '',
                         };
                     });
-                    await supabaseClient.schema('indent_flow').from('po_line_items').insert(updPoLi);
+                    sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items').insert(updPoLi), 'insert updated PO line items');
                 }
                 break;
             }
 
             case 'SUBMIT_PO_FOR_APPROVAL': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'pending_md_approval', submitted_at: new Date().toISOString(), submitted_by: state.currentUserId })
-                    .eq('id', action.payload.poId);
+                    .eq('id', action.payload.poId), 'submit PO');
                 break;
             }
 
             case 'MD_APPROVE_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: state.currentUserId })
-                    .eq('id', action.payload.poId);
+                    .eq('id', action.payload.poId), 'approve PO');
                 break;
             }
 
             case 'MD_REJECT_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'draft', rejected_at: new Date().toISOString(), rejected_by: state.currentUserId })
-                    .eq('id', action.payload.poId);
+                    .eq('id', action.payload.poId), 'MD reject PO');
                 break;
             }
 
             case 'APPROVE_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: state.currentUserId })
-                    .eq('id', action.payload.poId);
+                    .eq('id', action.payload.poId), 'approve PO');
                 break;
             }
 
             case 'REJECT_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'draft', rejected_at: new Date().toISOString(), rejected_by: state.currentUserId, reject_reason: action.payload.reason || '' })
-                    .eq('id', action.payload.poId);
+                    .eq('id', action.payload.poId), 'reject PO');
                 break;
             }
 
             case 'ISSUE_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'issued', issued_at: new Date().toISOString(), issued_by: state.currentUserId })
-                    .eq('id', action.payload.poId);
+                    .eq('id', action.payload.poId), 'issue PO');
                 break;
             }
 
@@ -1660,20 +1684,19 @@ async function supabaseSync(action, state) {
                         remarks: r.remarks || '',
                     };
                 });
-                await supabaseClient.schema('indent_flow').from('grns').insert(grnRows);
+                sbCheck(await supabaseClient.schema('indent_flow').from('grns').insert(grnRows), 'insert GRN');
 
                 // Update PO line item received quantities
                 for (var gi = 0; gi < receipts.length; gi++) {
                     var receipt = receipts[gi];
                     var qty = parseFloat(receipt.quantityReceived) || 0;
                     if (qty > 0) {
-                        // Use RPC or read-then-update since we need to increment
                         var liRes = await supabaseClient.schema('indent_flow').from('po_line_items')
                             .select('received_qty').eq('id', receipt.lineItemId).single();
                         if (liRes.data) {
                             var newReceivedQty = (liRes.data.received_qty || 0) + qty;
-                            await supabaseClient.schema('indent_flow').from('po_line_items')
-                                .update({ received_qty: newReceivedQty }).eq('id', receipt.lineItemId);
+                            sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items')
+                                .update({ received_qty: newReceivedQty }).eq('id', receipt.lineItemId), 'update received qty');
                         }
                     }
                 }
@@ -1681,30 +1704,30 @@ async function supabaseSync(action, state) {
             }
 
             case 'CLOSE_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'closed', closed_at: new Date().toISOString(), closed_by: state.currentUserId })
-                    .eq('id', action.payload.poId);
+                    .eq('id', action.payload.poId), 'close PO');
                 break;
             }
 
             case 'CANCEL_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), cancelled_by: state.currentUserId, cancel_reason: action.payload.reason || '' })
-                    .eq('id', action.payload.poId);
+                    .eq('id', action.payload.poId), 'cancel PO');
                 break;
             }
 
             case 'MARK_DISPATCHED': {
                 var indentId = typeof action.payload === 'string' ? action.payload : action.payload.indentId;
-                await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ status: 'dispatched' }).eq('id', indentId);
+                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
+                    .update({ status: 'dispatched' }).eq('id', indentId), 'mark dispatched');
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: indentId,
                     action: 'Dispatched',
                     user_id: state.currentUserId,
                     note: '',
-                });
+                }), 'dispatch activity');
                 break;
             }
 
@@ -1713,9 +1736,9 @@ async function supabaseSync(action, state) {
                 var lineItemUpdates = action.payload.lineItemUpdates || {};
                 var updateKeys = Object.keys(lineItemUpdates);
                 for (var rk = 0; rk < updateKeys.length; rk++) {
-                    await supabaseClient.schema('indent_flow').from('indent_line_items')
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items')
                         .update({ received: lineItemUpdates[updateKeys[rk]] })
-                        .eq('id', updateKeys[rk]);
+                        .eq('id', updateKeys[rk]), 'update line item received');
                 }
 
                 // Check if all received - the reducer handles status update
@@ -1726,56 +1749,56 @@ async function supabaseSync(action, state) {
                     });
                     var allDone = updatedLIs.every(function(li) { return li.received >= li.qty; });
                     if (allDone) {
-                        await supabaseClient.schema('indent_flow').from('indents')
-                            .update({ status: 'completed' }).eq('id', recIndentId);
+                        sbCheck(await supabaseClient.schema('indent_flow').from('indents')
+                            .update({ status: 'completed' }).eq('id', recIndentId), 'mark indent completed');
                     }
                 }
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: recIndentId,
                     action: 'Items Received',
                     user_id: action.payload.receivedBy || state.currentUserId,
                     note: '',
-                });
+                }), 'receive activity');
                 break;
             }
 
             case 'SUBMIT_DRAFT': {
                 var draftId = typeof action.payload === 'string' ? action.payload : action.payload.indentId;
-                await supabaseClient.schema('indent_flow').from('indents')
+                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
                     .update({ status: 'pending_approval', submitted_at: new Date().toISOString() })
-                    .eq('id', draftId);
+                    .eq('id', draftId), 'submit draft');
 
-                await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: draftId,
                     action: 'Submitted for Approval',
                     user_id: state.currentUserId,
                     note: '',
-                });
+                }), 'submit draft activity');
                 break;
             }
 
             case 'UPDATE_DRAFT': {
-                await supabaseClient.schema('indent_flow').from('indents')
+                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
                     .update({ description: action.payload.description || '', notes: action.payload.notes || '' })
-                    .eq('id', action.payload.indentId);
+                    .eq('id', action.payload.indentId), 'update draft');
 
                 // Replace line items
-                await supabaseClient.schema('indent_flow').from('indent_line_items')
-                    .delete().eq('indent_id', action.payload.indentId);
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items')
+                    .delete().eq('indent_id', action.payload.indentId), 'delete draft line items');
 
                 if (action.payload.lineItems && action.payload.lineItems.length > 0) {
                     var draftLiRows = action.payload.lineItems.map(function(li) {
                         return {
                             id: li.id,
                             indent_id: action.payload.indentId,
-                            description: li.description,
+                            description: li.name || li.description,
                             qty: li.qty,
                             unit: li.unit,
                             received: 0,
                         };
                     });
-                    await supabaseClient.schema('indent_flow').from('indent_line_items').insert(draftLiRows);
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items').insert(draftLiRows), 'insert draft line items');
                 }
                 break;
             }
@@ -1789,34 +1812,34 @@ async function supabaseSync(action, state) {
                 if (sourceIndent) {
                     var clonedBy = action.payload.clonedBy || state.currentUserId;
                     var cloneId = 'IND-2026-' + String((state.indents || []).length + 1).padStart(4, '0');
-                    await supabaseClient.schema('indent_flow').from('indents').insert({
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indents').insert({
                         id: cloneId,
                         site_id: sourceIndent.siteId,
                         created_by: clonedBy,
                         status: 'draft',
                         priority: sourceIndent.priority || 'normal',
-                    });
+                    }), 'clone indent');
 
                     var cloneLiRows = sourceIndent.lineItems.map(function(li, idx) {
                         return {
                             id: 'li-clone-' + Date.now() + '-' + idx,
                             indent_id: cloneId,
-                            description: li.description,
+                            description: li.name || li.description,
                             qty: li.qty,
                             unit: li.unit,
                             received: 0,
                         };
                     });
                     if (cloneLiRows.length > 0) {
-                        await supabaseClient.schema('indent_flow').from('indent_line_items').insert(cloneLiRows);
+                        sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items').insert(cloneLiRows), 'clone line items');
                     }
 
-                    await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                         indent_id: cloneId,
                         action: 'Created',
                         user_id: clonedBy,
                         note: 'Cloned from ' + sourceIndent.id,
-                    });
+                    }), 'clone activity');
                 }
                 break;
             }
@@ -1825,15 +1848,15 @@ async function supabaseSync(action, state) {
                 var ids = action.payload.indentIds || [];
                 var bulkApprovedBy = action.payload.approvedBy || state.currentUserId;
                 for (var bi = 0; bi < ids.length; bi++) {
-                    await supabaseClient.schema('indent_flow').from('indents')
-                        .update({ status: 'approved' }).eq('id', ids[bi]);
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indents')
+                        .update({ status: 'approved' }).eq('id', ids[bi]), 'bulk approve');
 
-                    await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                         indent_id: ids[bi],
                         action: 'Approved (Bulk)',
                         user_id: bulkApprovedBy,
                         note: 'Bulk approved with ' + ids.length + ' other indents',
-                    });
+                    }), 'bulk approve activity');
                 }
                 break;
             }
@@ -6385,10 +6408,10 @@ function CreateIndentScreen() {
   const [priority, setPriority] = useState('normal');
   const [requiredDate, setRequiredDate] = useState('');
   const [remarks, setRemarks] = useState('');
-  const [items, setItems] = useState([{ boqId: '', description: '', qty: '', unit: '', remarks: '', isBoqItem: false, boqReference: '' }]);
+  const [items, setItems] = useState([{ boqId: '', name: '', description: '', qty: '', unit: '', remarks: '', isBoqItem: false, boqReference: '' }]);
 
   const addItem = () => {
-    setItems([...items, { boqId: '', description: '', qty: '', unit: '', remarks: '', isBoqItem: false, boqReference: '' }]);
+    setItems([...items, { boqId: '', name: '', description: '', qty: '', unit: '', remarks: '', isBoqItem: false, boqReference: '' }]);
   };
 
   const removeItem = (idx) => {
@@ -6413,11 +6436,15 @@ function CreateIndentScreen() {
 
   const handleSubmit = (status) => {
     if (!siteId) return;
+    if (requiredDate && requiredDate < new Date().toISOString().split('T')[0]) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Required date cannot be in the past', type: 'error' } });
+      return;
+    }
     if (items.some(function(i) { return i.qty && (parseFloat(i.qty) <= 0 || parseFloat(i.qty) > 999999); })) {
       dispatch({ type: 'SHOW_TOAST', payload: { message: 'All quantities must be between 1 and 999,999', type: 'error' } });
       return;
     }
-    const validItems = items.filter(i => i.description && i.qty && parseFloat(i.qty) > 0 && parseFloat(i.qty) <= 999999);
+    const validItems = items.filter(i => (i.name || i.description) && i.qty && parseFloat(i.qty) > 0 && parseFloat(i.qty) <= 999999);
     if (validItems.length === 0) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please add at least one line item with valid quantity', type: 'error' } }); return; }
 
     const indent = {
@@ -6433,7 +6460,8 @@ function CreateIndentScreen() {
       lineItems: validItems.map((i, idx) => ({
         id: 'li-' + Date.now() + '-' + idx,
         boqId: i.boqId || null,
-        description: i.description,
+        name: i.name || i.description,
+        description: i.description || i.name,
         qty: parseFloat(i.qty),
         unit: i.unit,
         hsn: i.hsn || '',
@@ -6508,6 +6536,7 @@ function CreateIndentScreen() {
           React.createElement('label', { style: labelStyle }, 'Required Date'),
           React.createElement('input', {
             type: 'date', value: requiredDate, onChange: e => setRequiredDate(e.target.value),
+            min: new Date().toISOString().split('T')[0],
             style: inputStyle,
           })
         ),
@@ -6553,10 +6582,10 @@ function CreateIndentScreen() {
             style: { display: 'grid', gridTemplateColumns: '2fr 2fr 80px 80px 1fr 40px', gap: 8, alignItems: 'end' }
           },
             React.createElement('div', null,
-              idx === 0 && React.createElement('label', { style: labelStyle }, 'Chest Item'),
+              idx === 0 && React.createElement('label', { style: labelStyle }, 'Material *'),
               React.createElement('input', {
                 list: 'chest-items-' + idx,
-                value: item.description,
+                value: item.name,
                 onChange: function(e) {
                   var val = e.target.value;
                   var matchedBoq = boqItems.find(function(b) {
@@ -6564,13 +6593,13 @@ function CreateIndentScreen() {
                   });
                   if (matchedBoq) {
                     var updated = [...items];
-                    updated[idx] = { ...updated[idx], description: matchedBoq.name, boqId: matchedBoq.id, unit: matchedBoq.unit, hsn: matchedBoq.hsn || '' };
+                    updated[idx] = { ...updated[idx], name: matchedBoq.name, boqId: matchedBoq.id, unit: matchedBoq.unit, hsn: matchedBoq.hsn || '' };
                     setItems(updated);
                   } else {
-                    updateItem(idx, 'description', val);
+                    updateItem(idx, 'name', val);
                   }
                 },
-                placeholder: 'Type or select item...',
+                placeholder: 'Type or select material...',
                 style: inputStyle,
               }),
               React.createElement('datalist', { id: 'chest-items-' + idx },
@@ -7834,7 +7863,7 @@ function EscalatedScreen() {
                                     React.createElement('td', null,
                                         React.createElement('a', { href: '#approve-detail/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                                     ),
-                                    React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
+                                    React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
                                     React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
                                     React.createElement('td', null, getUserName(indent.createdBy, state.users)),
                                     React.createElement('td', null, indent.lineItems.length),
@@ -7909,7 +7938,7 @@ function ProcurementApprovedScreen() {
                                     React.createElement('td', null,
                                         React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                                     ),
-                                    React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
+                                    React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
                                     React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
                                     React.createElement('td', null, getUserName(indent.createdBy, state.users)),
                                     React.createElement('td', null, indent.lineItems.length),
@@ -8015,7 +8044,7 @@ function ProcurementProgressScreen() {
                             React.createElement('td', null,
                                 React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                             ),
-                            React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
+                            React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
                             React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
                             React.createElement('td', null, getUserName(indent.createdBy, state.users)),
                             React.createElement('td', null, indent.lineItems.length),
@@ -8099,7 +8128,7 @@ function ClerkAssignedScreen() {
                             React.createElement('td', null,
                                 React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                             ),
-                            React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
+                            React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
                             React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
                             React.createElement('td', null, indent.lineItems.length),
                             React.createElement('td', null, new Date(indent.createdAt).toLocaleDateString()),
@@ -9364,7 +9393,7 @@ function StorePendingScreen() {
                             React.createElement('td', null,
                                 React.createElement('a', { href: '#receipt/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                             ),
-                            React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
+                            React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
                             React.createElement('td', null, React.createElement(StatusBadge, { status: indent.status })),
                             React.createElement('td', null, indent.lineItems.length),
                             React.createElement('td', null, new Date(indent.createdAt).toLocaleDateString()),
@@ -9492,7 +9521,8 @@ function StoreNewIndentScreen() {
                     React.createElement('label', { className: 'form-label' }, 'Required Date'),
                     React.createElement('input', {
                         type: 'date', className: 'form-input', value: requiredDate,
-                        onChange: (e) => setRequiredDate(e.target.value)
+                        onChange: (e) => setRequiredDate(e.target.value),
+                        min: new Date().toISOString().split('T')[0]
                     })
                 ),
                 React.createElement('div', { className: 'form-group' },
@@ -9687,7 +9717,7 @@ function StoreHistoryScreen() {
                             React.createElement('td', null,
                                 React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                             ),
-                            React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
+                            React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
                             React.createElement('td', null,
                                 React.createElement('span', {
                                     className: 'status-badge',
@@ -9747,7 +9777,7 @@ function StoreAllScreen() {
                                 React.createElement('td', null,
                                     React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                                 ),
-                                React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
+                                React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
                                 React.createElement('td', null, React.createElement(StatusBadge, { status: indent.status })),
                                 React.createElement('td', null, indent.lineItems.length),
                                 React.createElement('td', null, new Date(indent.createdAt).toLocaleDateString())
@@ -9986,7 +10016,7 @@ function CompletedOrdersScreen() {
                                 React.createElement('td', null,
                                     React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                                 ),
-                                React.createElement('td', null, indent.lineItems.map(li => li.description).join(', ')),
+                                React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
                                 React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
                                 React.createElement('td', null, getUserName(indent.createdBy, state.users)),
                                 React.createElement('td', null, new Date(indent.createdAt).toLocaleDateString()),
