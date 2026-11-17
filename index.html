@@ -1146,6 +1146,7 @@ function transformIndent(row) {
 function transformPO(row) {
     return {
         id: row.id,
+        poNumber: row.po_number || row.id,
         indentId: row.indent_id,
         vendorId: row.vendor_id,
         status: row.status || 'draft',
@@ -1165,7 +1166,7 @@ function transformPO(row) {
         cancelledBy: row.cancelled_by,
         cancelReason: row.cancel_reason || '',
         rejectReason: row.reject_reason || '',
-        mdRejectReason: row.md_reject_reason || '',
+        mdRejectReason: row.remarks || '',
         version: row.version || 1,
         deliveryDate: row.delivery_date || '',
         paymentTerms: row.payment_terms || '',
@@ -1458,6 +1459,17 @@ async function supabaseSync(action, state) {
                 break;
             }
 
+            case 'SUBMIT_INDENT': {
+                await safeIndentUpdate(action.payload.indentId, { status: 'pending_approval', submitted_at: new Date().toISOString() }, 'submit indent');
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: action.payload.indentId,
+                    action: 'Submitted for Approval',
+                    user_id: action.payload.userId || state.currentUserId,
+                    note: '',
+                }), 'submit activity');
+                break;
+            }
+
             case 'APPROVE_INDENT': {
                 await safeIndentUpdate(action.payload.indentId, { status: 'approved' }, 'approve indent');
 
@@ -1614,6 +1626,7 @@ async function supabaseSync(action, state) {
                 var po = action.payload.po;
                 var poRow = {
                     id: po.id,
+                    po_number: po.poNumber || ('PO-' + po.id.slice(0, 8).toUpperCase()),
                     indent_id: action.payload.indentId,
                     vendor_id: po.vendorId,
                     status: po.status || 'draft',
@@ -1624,6 +1637,7 @@ async function supabaseSync(action, state) {
                     delivery_address: po.deliveryAddress || '',
                     notes: po.notes || '',
                     office_id: po.officeId || '',
+                    total_amount: po.totalAmount || 0,
                 };
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders').insert(poRow), 'insert PO');
 
@@ -2132,7 +2146,7 @@ async function supabaseSync(action, state) {
 
             case 'MD_REJECT_PO': {
                 await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'rejected', md_reject_reason: action.payload.reason || '' }).eq('id', action.payload.poId);
+                    .update({ status: 'draft', remarks: 'MD Rejected: ' + (action.payload.reason || '') }).eq('id', action.payload.poId);
                 break;
             }
 
@@ -2409,6 +2423,25 @@ function appReducer(state, action) {
                 ...state,
                 indents: [...state.indents, newIndent],
                 notifications: [...state.notifications, ...notificationsToAdd]
+            };
+        }
+
+        case 'SUBMIT_INDENT': {
+            var _si_indent = state.indents.find(function(i) { return i.id === action.payload.indentId; });
+            if (!_si_indent || _si_indent.status !== 'draft') return state;
+            var _si_notifs = [];
+            var _si_pms = (state.users || []).filter(function(u) { return u.role === 'project_manager'; });
+            var _si_md = (state.users || []).find(function(u) { return u.role === 'md'; });
+            _si_pms.forEach(function(pm) { _si_notifs.push(createNotification(pm.id, _si_indent.id, 'New indent ' + getIndentDisplayId(_si_indent, state.indents) + ' pending approval')); });
+            if (_si_md) { _si_notifs.push(createNotification(_si_md.id, _si_indent.id, 'New indent ' + getIndentDisplayId(_si_indent, state.indents) + ' pending approval')); }
+            return {
+                ...state,
+                indents: state.indents.map(function(ind) {
+                    return ind.id === action.payload.indentId
+                        ? Object.assign({}, ind, { status: 'pending_approval', submittedAt: new Date().toISOString(), activityLog: addActivityLog(ind, 'Submitted for Approval', state.currentUserId, '') })
+                        : ind;
+                }),
+                notifications: [...state.notifications, ..._si_notifs]
             };
         }
 
@@ -3070,32 +3103,7 @@ function appReducer(state, action) {
             };
         }
 
-        case 'REQUEST_MD_PO_APPROVAL':
-            return {
-                ...state,
-                purchaseOrders: state.purchaseOrders.map(po =>
-                    po.id === action.payload.poId
-                        ? { ...po, status: 'pending_md_approval' }
-                        : po
-                ),
-                indents: state.indents.map(ind =>
-                    ind.linkedPO === action.payload.poId
-                        ? {
-                            ...ind,
-                            status: 'pending_md_po_approval',
-                            activityLog: addActivityLog(ind, 'PO Sent for MD Approval', state.currentUserId, `PO ${action.payload.poId}`)
-                        }
-                        : ind
-                ),
-                notifications: [
-                    ...state.notifications,
-                    createNotification(
-                        state.users.find(u => u.role === 'md')?.id || 'md-001',
-                        action.payload.indentId,
-                        `PO ${action.payload.poId} needs your approval`
-                    )
-                ]
-            };
+        // REQUEST_MD_PO_APPROVAL handled in var-based section below
 
         case 'MD_APPROVE_PO':
             return {
@@ -3515,6 +3523,14 @@ function getIndentDisplayId(indent, allIndents) {
   });
   var idx = sorted.findIndex(function(i) { return i.id === indent.id; });
   return 'IND-' + String(idx + 1).padStart(4, '0');
+}
+
+function getPODisplayId(po) {
+  if (!po) return '';
+  if (po.poNumber) return po.poNumber;
+  // Fallback: if id looks like PO-YYYY-NNNN use it, otherwise show truncated UUID
+  if (po.id && /^PO-/.test(po.id)) return po.id;
+  return 'PO-' + (po.id || '').slice(0, 8).toUpperCase();
 }
 
 function escapeHtml(text) {
@@ -5095,6 +5111,21 @@ function IndentActionButtons(_ref) {
 
   var buttonWrap = { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '16px' };
 
+  // Site engineer + draft — allow submit for approval
+  if (role === 'site_engineer' && status === 'draft') {
+    return React.createElement('div', { style: buttonWrap },
+      React.createElement('button', { className: 'btn btn-success', onClick: function() {
+        if (!indent.items || indent.items.length === 0) {
+          dispatch({ type: 'SHOW_TOAST', payload: { message: 'Cannot submit: indent has no line items', type: 'error' } });
+          return;
+        }
+        dispatch({ type: 'SUBMIT_INDENT', payload: { indentId: indent.id, userId: state.currentUserId } });
+        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent submitted for approval', type: 'success' } });
+      } }, 'Submit for Approval'),
+      React.createElement('a', { href: '#edit-indent/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Edit Indent')
+    );
+  }
+
   // PM/MD + pending_approval
   if ((role === 'project_manager' || role === 'md') && status === 'pending_approval') {
     return React.createElement('div', null,
@@ -5388,7 +5419,7 @@ function PODetailScreen(_ref) {
       '<p style="margin:2px 0;font-size:13px;">Phone: ' + printPhone + ' | GSTIN: ' + printGSTIN + ' | PAN: ' + printPAN + '</p>' +
       '</div>' +
       '<h3 style="text-align:center;margin-bottom:16px;">PURCHASE ORDER</h3>' +
-      '<table><tr><td><strong>PO Number:</strong> ' + po.id + '</td><td><strong>Date:</strong> ' + new Date(po.createdAt).toLocaleDateString('en-IN') + '</td></tr>' +
+      '<table><tr><td><strong>PO Number:</strong> ' + getPODisplayId(po) + '</td><td><strong>Date:</strong> ' + new Date(po.createdAt).toLocaleDateString('en-IN') + '</td></tr>' +
       '<tr><td><strong>Vendor:</strong> ' + po.vendorName + '</td><td><strong>Delivery Date:</strong> ' + (po.deliveryDate || 'N/A') + '</td></tr>' +
       '<tr><td><strong>Status:</strong> ' + po.status + '</td><td><strong>Version:</strong> ' + (po.version || 1) + '</td></tr>' +
       '<tr><td colspan="2"><strong>Payment Terms:</strong> ' + (po.paymentTerms || 'N/A') + '</td></tr></table>' +
@@ -5454,7 +5485,7 @@ function PODetailScreen(_ref) {
       React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '14px' } },
         React.createElement('div', null,
           React.createElement('span', { style: { color: '#6b7280' } }, 'PO Number: '),
-          React.createElement('strong', null, po.id)
+          React.createElement('strong', null, getPODisplayId(po))
         ),
         React.createElement('div', null,
           React.createElement('span', { style: { color: '#6b7280' } }, 'Vendor: '),
@@ -9192,7 +9223,7 @@ function ProcurementPOsScreen() {
             '@media print { body { padding: 20px; } }',
             '</style></head><body>',
             '<h1>PURCHASE ORDER</h1>',
-            '<div class="info-row"><span class="info-label">PO Number:</span><span>' + po.id + '</span></div>',
+            '<div class="info-row"><span class="info-label">PO Number:</span><span>' + getPODisplayId(po) + '</span></div>',
             '<div class="info-row"><span class="info-label">Date:</span><span>' + new Date(po.createdAt).toLocaleDateString() + '</span></div>',
             '<div class="info-row"><span class="info-label">Vendor:</span><span>' + po.vendorName + '</span></div>',
             vendor ? '<div class="info-row"><span class="info-label">Vendor GSTIN:</span><span>' + (vendor.gstin || 'N/A') + '</span></div>' : '',
@@ -9260,7 +9291,7 @@ function ProcurementPOsScreen() {
                     )
                     : myPOs.map(po =>
                         React.createElement('tr', { key: po.id },
-                            React.createElement('td', { style: { fontWeight: '600' } }, React.createElement('a', { href: '#po/' + po.id, style: { color: '#3b82f6', textDecoration: 'none' } }, po.id)),
+                            React.createElement('td', { style: { fontWeight: '600' } }, React.createElement('a', { href: '#po/' + po.id, style: { color: '#3b82f6', textDecoration: 'none' } }, getPODisplayId(po))),
                             React.createElement('td', null, po.vendorName),
                             React.createElement('td', null,
                                 React.createElement('a', { href: '#indent/' + po.indentId, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId((state.indents || []).find(function(i) { return i.id === po.indentId; }) || { id: po.indentId }, state.indents))
@@ -9679,7 +9710,7 @@ function MDPOApprovalsScreen() {
                 return React.createElement('div', { key: po.id, style: { padding: '20px', borderBottom: '1px solid #e2e8f0' } },
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: '16px' } },
                         React.createElement('div', null,
-                            React.createElement('div', { style: { fontSize: '16px', fontWeight: '600', color: '#1e293b' } }, po.id),
+                            React.createElement('div', { style: { fontSize: '16px', fontWeight: '600', color: '#1e293b' } }, getPODisplayId(po)),
                             React.createElement('div', { style: { fontSize: '13px', color: '#64748b', marginTop: '4px' } },
                                 'Indent: ',
                                 React.createElement('a', { href: '#indent/' + po.indentId, style: { color: '#2563eb' } }, getIndentDisplayId((state.indents || []).find(function(i) { return i.id === po.indentId; }) || { id: po.indentId }, state.indents)),
