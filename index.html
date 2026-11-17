@@ -1195,12 +1195,26 @@ function transformPO(row) {
 function transformGRN(row) {
     return {
         id: row.id,
+        grnNumber: row.grn_number || '',
         poId: row.po_id,
+        receivedBy: row.received_by,
+        remarks: row.remarks || '',
+        createdAt: row.created_at,
+        photoUrl: row.photo_url || '',
+        items: (row.grn_items || []).map(function(gi) {
+            return {
+                id: gi.id,
+                poLineItemId: gi.po_line_item_id,
+                quantityReceived: gi.quantity_received || 0,
+                remarks: gi.remarks || '',
+                condition: gi.condition || 'Good',
+                qualityRemarks: gi.quality_remarks || '',
+            };
+        }),
+        // Legacy flat fields for backward compat
         lineItemId: row.line_item_id,
         quantityReceived: row.quantity_received || 0,
-        receivedBy: row.received_by,
-        receivedAt: row.received_at,
-        remarks: row.remarks || '',
+        receivedAt: row.received_at || row.created_at,
     };
 }
 
@@ -1756,8 +1770,11 @@ async function supabaseSync(action, state) {
 
             case 'RECEIVE_AGAINST_PO': {
                 var receipts = action.payload.receipts || [];
-                var grnId = genUUID();
-                var grnNumber = 'GRN-' + new Date().getFullYear() + '-' + Date.now().toString(36).toUpperCase();
+                // Find the GRN that was just created by the reducer (state is post-reducer)
+                var _rap_grns = state.grns || [];
+                var _rap_latestGrn = _rap_grns[_rap_grns.length - 1];
+                var grnId = _rap_latestGrn ? _rap_latestGrn.id : genUUID();
+                var grnNumber = _rap_latestGrn ? _rap_latestGrn.grnNumber : 'GRN-' + new Date().getFullYear() + '-' + Date.now().toString(36).toUpperCase();
 
                 // Insert GRN header
                 sbCheck(await supabaseClient.schema('indent_flow').from('grns').insert({
@@ -1766,9 +1783,10 @@ async function supabaseSync(action, state) {
                     po_id: action.payload.poId,
                     received_by: state.currentUserId,
                     remarks: action.payload.remarks || '',
+                    photo_url: action.payload.photoUrl || '',
                 }), 'insert GRN');
 
-                // Insert GRN line items
+                // Insert GRN line items with quality fields
                 var grnItemRows = receipts.map(function(r) {
                     return {
                         id: genUUID(),
@@ -1776,6 +1794,8 @@ async function supabaseSync(action, state) {
                         po_line_item_id: r.lineItemId,
                         quantity_received: parseFloat(r.quantityReceived) || 0,
                         remarks: r.remarks || '',
+                        condition: r.condition || 'Good',
+                        quality_remarks: r.qualityRemarks || '',
                     };
                 });
                 if (grnItemRows.length > 0) {
@@ -1794,6 +1814,35 @@ async function supabaseSync(action, state) {
                             sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items')
                                 .update({ received_qty: newReceivedQty }).eq('id', receipt.lineItemId), 'update received qty');
                         }
+                    }
+                }
+
+                // Update PO status if needed (state is post-reducer, has updated status)
+                var _rap_po = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
+                if (_rap_po && (_rap_po.status === 'partially_fulfilled' || _rap_po.status === 'fulfilled')) {
+                    sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
+                        .update({ status: _rap_po.status, updated_at: new Date().toISOString() })
+                        .eq('id', action.payload.poId), 'update PO status after receipt');
+                }
+
+                // Sync discrepancy notifications — check if any receipts had non-Good condition
+                var _sync_discrepancies = [];
+                receipts.forEach(function(r) {
+                    if (r.condition && r.condition !== 'Good') {
+                        _sync_discrepancies.push(r.condition);
+                    }
+                });
+                if (_sync_discrepancies.length > 0 && _rap_po) {
+                    var _sync_msg = 'Quality issue in GRN ' + grnNumber + ' for PO ' + (getPODisplayId ? getPODisplayId(_rap_po) : action.payload.poId) + ': ' + _sync_discrepancies.length + ' item(s) flagged';
+                    var _sync_procUsers = (state.users || []).filter(function(u) { return u.role === 'procurement_manager'; });
+                    for (var ni = 0; ni < _sync_procUsers.length; ni++) {
+                        sbCheck(await supabaseClient.schema('indent_flow').from('notifications').insert({
+                            id: genUUID(),
+                            user_id: _sync_procUsers[ni].id,
+                            indent_id: null,
+                            message: _sync_msg,
+                            read: false,
+                        }), 'insert discrepancy notification');
                     }
                 }
                 break;
@@ -3361,18 +3410,30 @@ function appReducer(state, action) {
             var _rap_po = (state.purchaseOrders || []).find(function(p) { return p.id === _rap_poId; });
             if (!_rap_po) return state;
 
-            var grnId = 'GRN-' + Date.now();
-            var newGrns = _rap_receipts.map(function(r, ri) {
-                return {
-                    id: grnId + '-' + ri,
-                    poId: _rap_poId,
-                    lineItemId: r.lineItemId,
-                    quantityReceived: parseFloat(r.quantityReceived) || 0,
-                    receivedBy: state.currentUserId,
-                    receivedAt: new Date().toISOString(),
-                    remarks: r.remarks || '',
-                };
-            });
+            var _rap_grnId = genUUID();
+            var _rap_grnNumber = 'GRN-' + new Date().getFullYear() + '-' + Date.now().toString(36).toUpperCase();
+            var _rap_now = new Date().toISOString();
+
+            // Build single GRN with nested items (new structure)
+            var _rap_newGrn = {
+                id: _rap_grnId,
+                grnNumber: _rap_grnNumber,
+                poId: _rap_poId,
+                receivedBy: state.currentUserId,
+                remarks: action.payload.remarks || '',
+                createdAt: _rap_now,
+                photoUrl: action.payload.photoUrl || '',
+                items: _rap_receipts.map(function(r) {
+                    return {
+                        id: genUUID(),
+                        poLineItemId: r.lineItemId,
+                        quantityReceived: parseFloat(r.quantityReceived) || 0,
+                        remarks: r.remarks || '',
+                        condition: r.condition || 'Good',
+                        qualityRemarks: r.qualityRemarks || '',
+                    };
+                }),
+            };
 
             var updatedPoLineItems = _rap_po.lineItems.map(function(li) {
                 var receipt = _rap_receipts.find(function(r) { return r.lineItemId === li.id; });
@@ -3386,9 +3447,29 @@ function appReducer(state, action) {
             var someFulfilled = updatedPoLineItems.some(function(li) { return (li.receivedQty || 0) > 0; });
             var newPoStatus = allFulfilled ? 'fulfilled' : (someFulfilled ? 'partially_fulfilled' : _rap_po.status);
 
+            // Check for discrepancies and generate notifications
+            var _rap_discrepancies = [];
+            _rap_receipts.forEach(function(r) {
+                var li = _rap_po.lineItems.find(function(l) { return l.id === r.lineItemId; });
+                if (r.condition && r.condition !== 'Good') {
+                    _rap_discrepancies.push((li ? li.description || li.name : 'Item') + ': ' + r.condition);
+                }
+            });
+            var _rap_notifs = [];
+            if (_rap_discrepancies.length > 0) {
+                var _rap_poDisplay = getPODisplayId(_rap_po);
+                var _rap_msg = 'Discrepancy in GRN ' + _rap_grnNumber + ' for ' + _rap_poDisplay + ': ' + _rap_discrepancies.join('; ');
+                // Notify all procurement managers
+                (state.users || []).forEach(function(u) {
+                    if (u.role === 'procurement_manager') {
+                        _rap_notifs.push(createNotification(u.id, null, _rap_msg));
+                    }
+                });
+            }
+
             return {
                 ...state,
-                grns: [...(state.grns || []), ...newGrns],
+                grns: [...(state.grns || []), _rap_newGrn],
                 purchaseOrders: state.purchaseOrders.map(function(po) {
                     return po.id === _rap_poId ? Object.assign({}, po, { lineItems: updatedPoLineItems, status: newPoStatus }) : po;
                 }),
@@ -3397,6 +3478,7 @@ function appReducer(state, action) {
                         ? Object.assign({}, ind, { activityLog: addActivityLog(ind, allFulfilled ? 'PO Fully Received' : 'PO Partial Receipt', state.currentUserId, 'GRN recorded for PO ' + _rap_poId) })
                         : ind;
                 }),
+                notifications: [...(state.notifications || []), ..._rap_notifs],
             };
         }
 
@@ -3543,6 +3625,61 @@ function escapeHtml(text) {
   return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
+// Print GRN receipt
+function printGRN(grn, po, state) {
+  var grnItems = grn.items || [];
+  if (grnItems.length === 0 && grn.lineItemId) {
+    grnItems = [{ poLineItemId: grn.lineItemId, quantityReceived: grn.quantityReceived || 0, remarks: grn.remarks || '', condition: 'Good' }];
+  }
+  var vendor = po ? (state.vendors || []).find(function(v) { return v.id === po.vendorId; }) : null;
+  var itemsHtml = grnItems.map(function(gi) {
+    var li = po ? po.lineItems.find(function(l) { return l.id === gi.poLineItemId; }) : null;
+    return '<tr><td style="padding:6px 10px;border:1px solid #ddd">' + escapeHtml(li ? (li.description || li.name || '') : '') +
+      '</td><td style="padding:6px 10px;border:1px solid #ddd;text-align:center">' + (gi.quantityReceived || 0) +
+      '</td><td style="padding:6px 10px;border:1px solid #ddd">' + escapeHtml(gi.condition || 'Good') +
+      '</td><td style="padding:6px 10px;border:1px solid #ddd">' + escapeHtml([gi.remarks, gi.qualityRemarks].filter(Boolean).join(' | ') || '-') +
+      '</td></tr>';
+  }).join('');
+  var html = '<html><head><title>GRN - ' + escapeHtml(grn.grnNumber || grn.id) + '</title>' +
+    '<style>body{font-family:Arial,sans-serif;padding:20px}table{width:100%;border-collapse:collapse;margin-top:12px}' +
+    'th{background:#f1f5f9;padding:8px 10px;border:1px solid #ddd;text-align:left;font-size:13px}' +
+    'td{font-size:13px}h1{font-size:18px;margin-bottom:4px}h2{font-size:14px;color:#6b7280;margin-top:0}' +
+    '.info{display:flex;gap:24px;flex-wrap:wrap;margin:12px 0;font-size:13px}.info div{margin-bottom:4px}' +
+    '.info strong{display:block;font-size:11px;color:#6b7280;text-transform:uppercase}' +
+    '@media print{body{padding:0}}</style></head><body>' +
+    '<h1>Goods Received Note</h1><h2>' + escapeHtml(grn.grnNumber || grn.id) + '</h2>' +
+    '<div class="info">' +
+    '<div><strong>PO Number</strong>' + escapeHtml(po ? getPODisplayId(po) : '') + '</div>' +
+    '<div><strong>Vendor</strong>' + escapeHtml(vendor ? vendor.name : '') + '</div>' +
+    '<div><strong>Received By</strong>' + escapeHtml(getUserName(grn.receivedBy, state.users)) + '</div>' +
+    '<div><strong>Date</strong>' + new Date(grn.createdAt || grn.receivedAt).toLocaleDateString('en-IN') + '</div>' +
+    '</div>' +
+    (grn.remarks ? '<p style="font-size:13px"><strong>Remarks:</strong> ' + escapeHtml(grn.remarks) + '</p>' : '') +
+    '<table><thead><tr><th>Item</th><th style="text-align:center">Qty Received</th><th>Condition</th><th>Remarks</th></tr></thead><tbody>' +
+    itemsHtml + '</tbody></table>' +
+    '<div style="margin-top:40px;display:flex;justify-content:space-between;font-size:13px">' +
+    '<div><strong>Received By:</strong><br><br>_________________________</div>' +
+    '<div><strong>Verified By:</strong><br><br>_________________________</div>' +
+    '</div></body></html>';
+  var win = window.open('', '_blank');
+  if (win) {
+    win.document.write(html);
+    win.document.close();
+    win.print();
+  }
+}
+
+// Helper to get POs for storekeeper's sites
+function getStorePOs(state) {
+  var userSites = getUserSites(state.currentUserId, state.sites, state.siteAssignments);
+  var siteIds = userSites.map(function(s) { return s.id; });
+  return (state.purchaseOrders || []).filter(function(po) {
+    // Find the linked indent to check siteId
+    var indent = state.indents.find(function(i) { return i.id === po.indentId || i.linkedPO === po.id; });
+    return indent && siteIds.includes(indent.siteId);
+  });
+}
+
 // ─────────────────────────────────────────────
 // 1. Toast Component
 // ─────────────────────────────────────────────
@@ -3605,7 +3742,7 @@ function LoginPage() {
   var roleRoutes = {
     admin: '#users',
     site_engineer: '#my-indents',
-    storekeeper: '#store-pending',
+    storekeeper: '#store-dashboard',
     project_manager: '#dashboard',
     procurement_manager: '#procurement-dashboard',
     procurement_clerk: '#clerk-assigned',
@@ -3819,9 +3956,12 @@ function Sidebar() {
       { label: '📜 History', hash: '#history' },
     ],
     storekeeper: [
+      { label: '📊 Store Dashboard', hash: '#store-dashboard' },
+      { label: '📦 Expected Deliveries', hash: '#store-expected' },
       { label: '📥 Pending Receipt', hash: '#store-pending' },
       { label: '➕ New Indent', hash: '#store-new-indent' },
       { label: '📜 History', hash: '#store-history' },
+      { label: '📋 GRN History', hash: '#store-grn-history' },
       { label: '📋 All Indents', hash: '#store-all' },
     ],
     project_manager: [
@@ -5225,77 +5365,212 @@ function GRNRecordingSection(_ref) {
   var remarks = _remarks[0];
   var setRemarks = _remarks[1];
 
-  var handleSubmitReceipt = function() {
+  var _conditions = useState({});
+  var conditions = _conditions[0];
+  var setConditions = _conditions[1];
+
+  var _qualityRemarks = useState({});
+  var qualityRemarks = _qualityRemarks[0];
+  var setQualityRemarks = _qualityRemarks[1];
+
+  var _grnRemarks = useState('');
+  var grnRemarks = _grnRemarks[0];
+  var setGrnRemarks = _grnRemarks[1];
+
+  var _photoFile = useState(null);
+  var photoFile = _photoFile[0];
+  var setPhotoFile = _photoFile[1];
+
+  var _photoPreview = useState(null);
+  var photoPreview = _photoPreview[0];
+  var setPhotoPreview = _photoPreview[1];
+
+  var _uploading = useState(false);
+  var uploading = _uploading[0];
+  var setUploading = _uploading[1];
+
+  var handlePhotoChange = function(e) {
+    var file = e.target.files[0];
+    if (file) {
+      setPhotoFile(file);
+      var reader = new FileReader();
+      reader.onload = function(ev) { setPhotoPreview(ev.target.result); };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  var handleSubmitReceipt = async function() {
     var receipts = [];
     po.lineItems.forEach(function(li) {
       var qty = parseFloat(receiving[li.id]) || 0;
       if (qty > 0) {
-        receipts.push({ lineItemId: li.id, quantityReceived: qty, remarks: remarks[li.id] || '' });
+        receipts.push({
+          lineItemId: li.id,
+          quantityReceived: qty,
+          remarks: remarks[li.id] || '',
+          condition: conditions[li.id] || 'Good',
+          qualityRemarks: qualityRemarks[li.id] || '',
+        });
       }
     });
     if (receipts.length === 0) {
       dispatch({ type: 'SHOW_TOAST', payload: { message: 'Enter at least one quantity to receive', type: 'error' } });
       return;
     }
-    dispatch({ type: 'RECEIVE_AGAINST_PO', payload: { poId: po.id, receipts: receipts } });
+
+    // Upload photo if present
+    var photoUrl = '';
+    if (photoFile) {
+      setUploading(true);
+      try {
+        var filePath = 'grn-photos/' + po.id + '/' + Date.now() + '-' + photoFile.name;
+        var uploadResult = await supabaseClient.storage.from('receipts').upload(filePath, photoFile);
+        if (uploadResult.error) {
+          console.warn('[NC_MIS] Photo upload failed:', uploadResult.error.message);
+        } else {
+          var urlResult = supabaseClient.storage.from('receipts').getPublicUrl(filePath);
+          photoUrl = urlResult.data ? urlResult.data.publicUrl : '';
+        }
+      } catch (uploadErr) {
+        console.warn('[NC_MIS] Photo upload error:', uploadErr);
+      }
+      setUploading(false);
+    }
+
+    dispatch({ type: 'RECEIVE_AGAINST_PO', payload: { poId: po.id, receipts: receipts, remarks: grnRemarks, photoUrl: photoUrl } });
     dispatch({ type: 'SHOW_TOAST', payload: { message: 'Receipt recorded successfully', type: 'success' } });
     setReceiving({});
     setRemarks({});
+    setConditions({});
+    setQualityRemarks({});
+    setGrnRemarks('');
+    setPhotoFile(null);
+    setPhotoPreview(null);
   };
+
+  var thStyle = { textAlign: 'left', padding: '8px 12px', borderBottom: '2px solid #86efac', fontSize: '13px' };
+  var thCenter = Object.assign({}, thStyle, { textAlign: 'center' });
 
   return React.createElement('div', {
     style: { background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px', padding: '20px', marginBottom: '20px' }
   },
     React.createElement('h3', { style: { marginTop: 0, marginBottom: '12px', color: '#15803d' } }, 'Record Receipt (GRN)'),
-    React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '14px', marginBottom: '12px' } },
-      React.createElement('thead', null,
-        React.createElement('tr', { style: { background: '#dcfce7' } },
-          React.createElement('th', { style: { textAlign: 'left', padding: '8px 12px', borderBottom: '2px solid #86efac' } }, 'Description'),
-          React.createElement('th', { style: { textAlign: 'center', padding: '8px 12px', borderBottom: '2px solid #86efac' } }, 'Ordered Qty'),
-          React.createElement('th', { style: { textAlign: 'center', padding: '8px 12px', borderBottom: '2px solid #86efac' } }, 'Previously Received'),
-          React.createElement('th', { style: { textAlign: 'center', padding: '8px 12px', borderBottom: '2px solid #86efac' } }, 'Receiving Now'),
-          React.createElement('th', { style: { textAlign: 'left', padding: '8px 12px', borderBottom: '2px solid #86efac' } }, 'Remarks')
+    React.createElement('div', { style: { overflowX: 'auto' } },
+      React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '14px', marginBottom: '12px', minWidth: '700px' } },
+        React.createElement('thead', null,
+          React.createElement('tr', { style: { background: '#dcfce7' } },
+            React.createElement('th', { style: thStyle }, 'Description'),
+            React.createElement('th', { style: thCenter }, 'Ordered'),
+            React.createElement('th', { style: thCenter }, 'Prev Recd'),
+            React.createElement('th', { style: thCenter }, 'Receiving Now'),
+            React.createElement('th', { style: thStyle }, 'Condition'),
+            React.createElement('th', { style: thStyle }, 'Quality Remarks'),
+            React.createElement('th', { style: thStyle }, 'Remarks')
+          )
+        ),
+        React.createElement('tbody', null,
+          po.lineItems.map(function(li) {
+            var ordered = li.quantity || li.qty || 0;
+            var prevReceived = li.receivedQty || 0;
+            var remaining = ordered - prevReceived;
+            return React.createElement('tr', { key: li.id, style: { borderBottom: '1px solid #e5e7eb' } },
+              React.createElement('td', { style: { padding: '8px 12px' } }, li.description || li.name || ''),
+              React.createElement('td', { style: { padding: '8px 12px', textAlign: 'center' } }, ordered),
+              React.createElement('td', { style: { padding: '8px 12px', textAlign: 'center', color: prevReceived > 0 ? '#15803d' : '#6b7280' } }, prevReceived),
+              React.createElement('td', { style: { padding: '8px 12px', textAlign: 'center' } },
+                remaining > 0
+                  ? React.createElement('input', {
+                      type: 'number', min: 0, max: remaining, step: 'any',
+                      value: receiving[li.id] || '',
+                      onChange: function(e) { setReceiving(function(prev) { return Object.assign({}, prev, { [li.id]: e.target.value }); }); },
+                      style: { width: '70px', padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: '4px', textAlign: 'center' },
+                      placeholder: '0',
+                    })
+                  : React.createElement('span', { style: { color: '#15803d', fontWeight: 600 } }, 'Complete')
+              ),
+              React.createElement('td', { style: { padding: '8px 12px' } },
+                remaining > 0
+                  ? React.createElement('select', {
+                      value: conditions[li.id] || 'Good',
+                      onChange: function(e) { setConditions(function(prev) { return Object.assign({}, prev, { [li.id]: e.target.value }); }); },
+                      style: { padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '13px',
+                        backgroundColor: (conditions[li.id] && conditions[li.id] !== 'Good') ? '#fef2f2' : '#fff',
+                        color: (conditions[li.id] && conditions[li.id] !== 'Good') ? '#dc2626' : '#1e293b' }
+                    },
+                      React.createElement('option', { value: 'Good' }, 'Good'),
+                      React.createElement('option', { value: 'Damaged' }, 'Damaged'),
+                      React.createElement('option', { value: 'Partially Damaged' }, 'Partially Damaged'),
+                      React.createElement('option', { value: 'Rejected' }, 'Rejected')
+                    )
+                  : null
+              ),
+              React.createElement('td', { style: { padding: '8px 12px' } },
+                remaining > 0 && conditions[li.id] && conditions[li.id] !== 'Good'
+                  ? React.createElement('input', {
+                      type: 'text',
+                      value: qualityRemarks[li.id] || '',
+                      onChange: function(e) { setQualityRemarks(function(prev) { return Object.assign({}, prev, { [li.id]: e.target.value }); }); },
+                      style: { width: '100%', padding: '4px 8px', border: '1px solid #fca5a5', borderRadius: '4px', fontSize: '13px', backgroundColor: '#fef2f2' },
+                      placeholder: 'Describe quality issue...',
+                    })
+                  : null
+              ),
+              React.createElement('td', { style: { padding: '8px 12px' } },
+                remaining > 0
+                  ? React.createElement('input', {
+                      type: 'text',
+                      value: remarks[li.id] || '',
+                      onChange: function(e) { setRemarks(function(prev) { return Object.assign({}, prev, { [li.id]: e.target.value }); }); },
+                      style: { width: '100%', padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '13px' },
+                      placeholder: 'Remarks...',
+                    })
+                  : null
+              )
+            );
+          })
         )
-      ),
-      React.createElement('tbody', null,
-        po.lineItems.map(function(li) {
-          var ordered = li.quantity || li.qty || 0;
-          var prevReceived = li.receivedQty || 0;
-          var remaining = ordered - prevReceived;
-          return React.createElement('tr', { key: li.id, style: { borderBottom: '1px solid #e5e7eb' } },
-            React.createElement('td', { style: { padding: '8px 12px' } }, li.description || li.name || ''),
-            React.createElement('td', { style: { padding: '8px 12px', textAlign: 'center' } }, ordered),
-            React.createElement('td', { style: { padding: '8px 12px', textAlign: 'center', color: prevReceived > 0 ? '#15803d' : '#6b7280' } }, prevReceived),
-            React.createElement('td', { style: { padding: '8px 12px', textAlign: 'center' } },
-              remaining > 0
-                ? React.createElement('input', {
-                    type: 'number', min: 0, max: remaining, step: 'any',
-                    value: receiving[li.id] || '',
-                    onChange: function(e) { setReceiving(function(prev) { return Object.assign({}, prev, { [li.id]: e.target.value }); }); },
-                    style: { width: '80px', padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: '4px', textAlign: 'center' },
-                    placeholder: '0',
-                  })
-                : React.createElement('span', { style: { color: '#15803d', fontWeight: 600 } }, 'Complete')
-            ),
-            React.createElement('td', { style: { padding: '8px 12px' } },
-              remaining > 0
-                ? React.createElement('input', {
-                    type: 'text',
-                    value: remarks[li.id] || '',
-                    onChange: function(e) { setRemarks(function(prev) { return Object.assign({}, prev, { [li.id]: e.target.value }); }); },
-                    style: { width: '100%', padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '13px' },
-                    placeholder: 'Remarks...',
-                  })
-                : null
-            )
-          );
-        })
       )
+    ),
+    // GRN-level remarks
+    React.createElement('div', { style: { marginBottom: '12px' } },
+      React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: 600, color: '#15803d', marginBottom: '4px' } }, 'GRN Remarks'),
+      React.createElement('input', {
+        type: 'text', value: grnRemarks,
+        onChange: function(e) { setGrnRemarks(e.target.value); },
+        style: { width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px' },
+        placeholder: 'Overall remarks for this receipt...',
+      })
+    ),
+    // Photo upload
+    React.createElement('div', { style: { marginBottom: '12px' } },
+      React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: 600, color: '#15803d', marginBottom: '4px' } }, 'Attach Photo (Invoice/Delivery)'),
+      React.createElement('label', {
+        htmlFor: 'grn-photo-upload',
+        style: {
+          display: 'inline-block', border: '2px dashed #86efac', borderRadius: '8px',
+          padding: '12px 24px', cursor: 'pointer', backgroundColor: '#f0fdf4', fontSize: '13px', color: '#15803d'
+        }
+      },
+        photoFile ? photoFile.name : 'Click to upload photo',
+        React.createElement('input', {
+          id: 'grn-photo-upload', type: 'file', accept: 'image/*',
+          onChange: handlePhotoChange, style: { display: 'none' }
+        })
+      ),
+      photoPreview
+        ? React.createElement('div', { style: { marginTop: '8px' } },
+            React.createElement('img', {
+              src: photoPreview, alt: 'Photo preview',
+              style: { maxWidth: '150px', maxHeight: '150px', borderRadius: '6px', border: '1px solid #e2e8f0' }
+            })
+          )
+        : null
     ),
     React.createElement('button', {
       className: 'btn btn-success',
       onClick: handleSubmitReceipt,
-    }, 'Submit Receipt')
+      disabled: uploading,
+    }, uploading ? 'Uploading...' : 'Submit Receipt')
   );
 }
 
@@ -5732,33 +6007,56 @@ function PODetailScreen(_ref) {
     (function() {
       var poGrns = (state.grns || []).filter(function(g) { return g.poId === po.id; });
       if (poGrns.length === 0) return null;
+      var _grnThStyle = { textAlign: 'left', padding: '8px 12px', borderBottom: '2px solid #e5e7eb' };
       return React.createElement('div', { style: { background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '20px' } },
         React.createElement('h3', { style: { marginTop: 0, marginBottom: '12px' } }, 'Receipt History (GRNs)'),
-        React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '14px' } },
-          React.createElement('thead', null,
-            React.createElement('tr', { style: { background: '#f9fafb' } },
-              React.createElement('th', { style: { textAlign: 'left', padding: '8px 12px', borderBottom: '2px solid #e5e7eb' } }, 'GRN ID'),
-              React.createElement('th', { style: { textAlign: 'left', padding: '8px 12px', borderBottom: '2px solid #e5e7eb' } }, 'Line Item'),
-              React.createElement('th', { style: { textAlign: 'center', padding: '8px 12px', borderBottom: '2px solid #e5e7eb' } }, 'Qty Received'),
-              React.createElement('th', { style: { textAlign: 'left', padding: '8px 12px', borderBottom: '2px solid #e5e7eb' } }, 'Received By'),
-              React.createElement('th', { style: { textAlign: 'left', padding: '8px 12px', borderBottom: '2px solid #e5e7eb' } }, 'Date'),
-              React.createElement('th', { style: { textAlign: 'left', padding: '8px 12px', borderBottom: '2px solid #e5e7eb' } }, 'Remarks')
+        poGrns.map(function(grn) {
+          var grnItems = grn.items || [];
+          // If old flat format (no items array), create a single-item array for backward compat
+          if (grnItems.length === 0 && grn.lineItemId) {
+            grnItems = [{ poLineItemId: grn.lineItemId, quantityReceived: grn.quantityReceived || 0, remarks: grn.remarks || '', condition: 'Good' }];
+          }
+          return React.createElement('div', { key: grn.id, style: { border: '1px solid #e5e7eb', borderRadius: '6px', padding: '12px', marginBottom: '12px' } },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' } },
+              React.createElement('div', null,
+                React.createElement('strong', { style: { fontSize: '14px' } }, grn.grnNumber || grn.id),
+                React.createElement('span', { style: { color: '#6b7280', fontSize: '13px', marginLeft: '12px' } },
+                  'by ' + getUserName(grn.receivedBy, state.users) + ' on ' + new Date(grn.createdAt || grn.receivedAt).toLocaleDateString('en-IN')
+                )
+              ),
+              React.createElement('button', {
+                className: 'btn btn-sm btn-secondary',
+                onClick: function() { printGRN(grn, po, state); },
+                style: { fontSize: '12px', padding: '4px 10px' }
+              }, 'Print')
+            ),
+            grn.remarks ? React.createElement('div', { style: { fontSize: '13px', color: '#6b7280', marginBottom: '8px' } }, 'Remarks: ' + grn.remarks) : null,
+            grn.photoUrl ? React.createElement('div', { style: { marginBottom: '8px' } },
+              React.createElement('a', { href: grn.photoUrl, target: '_blank', rel: 'noopener', style: { fontSize: '13px', color: '#2563eb' } }, 'View Photo')
+            ) : null,
+            React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '13px' } },
+              React.createElement('thead', null,
+                React.createElement('tr', { style: { background: '#f9fafb' } },
+                  React.createElement('th', { style: _grnThStyle }, 'Item'),
+                  React.createElement('th', { style: Object.assign({}, _grnThStyle, { textAlign: 'center' }) }, 'Qty'),
+                  React.createElement('th', { style: _grnThStyle }, 'Condition'),
+                  React.createElement('th', { style: _grnThStyle }, 'Remarks')
+                )
+              ),
+              React.createElement('tbody', null,
+                grnItems.map(function(gi, idx) {
+                  var li = po.lineItems.find(function(l) { return l.id === gi.poLineItemId; });
+                  return React.createElement('tr', { key: gi.id || idx, style: { borderBottom: '1px solid #f1f5f9' } },
+                    React.createElement('td', { style: { padding: '6px 12px' } }, li ? (li.description || li.name || '') : gi.poLineItemId),
+                    React.createElement('td', { style: { padding: '6px 12px', textAlign: 'center', fontWeight: 600 } }, gi.quantityReceived),
+                    React.createElement('td', { style: { padding: '6px 12px', color: gi.condition && gi.condition !== 'Good' ? '#dc2626' : '#15803d' } }, gi.condition || 'Good'),
+                    React.createElement('td', { style: { padding: '6px 12px', fontSize: 12 } }, [gi.remarks, gi.qualityRemarks].filter(Boolean).join(' | ') || '')
+                  );
+                })
+              )
             )
-          ),
-          React.createElement('tbody', null,
-            poGrns.map(function(grn) {
-              var li = po.lineItems.find(function(l) { return l.id === grn.lineItemId; });
-              return React.createElement('tr', { key: grn.id, style: { borderBottom: '1px solid #e5e7eb' } },
-                React.createElement('td', { style: { padding: '8px 12px', fontSize: 12, fontFamily: 'monospace' } }, grn.id),
-                React.createElement('td', { style: { padding: '8px 12px' } }, li ? (li.description || li.name || '') : grn.lineItemId),
-                React.createElement('td', { style: { padding: '8px 12px', textAlign: 'center', fontWeight: 600 } }, grn.quantityReceived),
-                React.createElement('td', { style: { padding: '8px 12px' } }, getUserName(grn.receivedBy, state.users)),
-                React.createElement('td', { style: { padding: '8px 12px' } }, new Date(grn.receivedAt).toLocaleDateString('en-IN')),
-                React.createElement('td', { style: { padding: '8px 12px', fontSize: 12 } }, grn.remarks || '')
-              );
-            })
-          )
-        )
+          );
+        })
       );
     })(),
     React.createElement('div', { style: { background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '20px' } },
@@ -9794,6 +10092,275 @@ function MDPOApprovalsScreen() {
 }
 
 // ============================================================================
+// 11a. STORE DASHBOARD SCREEN
+// ============================================================================
+
+function StoreDashboardScreen() {
+    var _ctx = React.useContext(AppContext);
+    var state = _ctx[0];
+    var storePOs = getStorePOs(state);
+    var userSites = getUserSites(state.currentUserId, state.sites, state.siteAssignments);
+    var siteIds = userSites.map(function(s) { return s.id; });
+    var today = new Date().toISOString().split('T')[0];
+
+    // Summary metrics
+    var activePOs = storePOs.filter(function(po) { return po.status === 'issued' || po.status === 'partially_fulfilled'; });
+    var pendingIndents = state.indents.filter(function(i) {
+        if (!siteIds.includes(i.siteId)) return false;
+        if (!['approved', 'in_procurement', 'dispatched'].includes(i.status)) return false;
+        return i.lineItems.some(function(li) { return li.received < li.qty; });
+    });
+    var thisMonth = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
+    var monthGrns = (state.grns || []).filter(function(g) {
+        if (!storePOs.find(function(po) { return po.id === g.poId; })) return false;
+        return (g.createdAt || g.receivedAt || '').startsWith(thisMonth);
+    });
+    var overduePOs = activePOs.filter(function(po) { return po.deliveryDate && po.deliveryDate < today; });
+
+    var cardStyle = { flex: '1 1 180px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' };
+    var cardNum = { fontSize: '28px', fontWeight: 700, marginBottom: '4px' };
+    var cardLabel = { fontSize: '13px', color: '#64748b' };
+
+    return React.createElement('div', null,
+        React.createElement('h2', { style: { fontSize: '18px', fontWeight: 700, marginBottom: '16px' } }, 'Store Dashboard'),
+
+        // Summary Cards
+        React.createElement('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap', marginBottom: '24px' } },
+            React.createElement('div', { style: cardStyle },
+                React.createElement('div', { style: Object.assign({}, cardNum, { color: '#2563eb' }) }, activePOs.length),
+                React.createElement('div', { style: cardLabel }, 'Active POs')
+            ),
+            React.createElement('div', { style: cardStyle },
+                React.createElement('div', { style: Object.assign({}, cardNum, { color: '#f59e0b' }) }, pendingIndents.length),
+                React.createElement('div', { style: cardLabel }, 'Pending Receipts')
+            ),
+            React.createElement('div', { style: cardStyle },
+                React.createElement('div', { style: Object.assign({}, cardNum, { color: '#10b981' }) }, monthGrns.length),
+                React.createElement('div', { style: cardLabel }, 'GRNs This Month')
+            ),
+            React.createElement('div', { style: Object.assign({}, cardStyle, overduePOs.length > 0 ? { border: '2px solid #ef4444' } : {}) },
+                React.createElement('div', { style: Object.assign({}, cardNum, { color: overduePOs.length > 0 ? '#ef4444' : '#6b7280' }) }, overduePOs.length),
+                React.createElement('div', { style: cardLabel }, 'Overdue Deliveries')
+            )
+        ),
+
+        // Delivery Alerts
+        overduePOs.length > 0 ? React.createElement('div', { className: 'card', style: { marginBottom: '20px', borderLeft: '4px solid #ef4444' } },
+            React.createElement('div', { className: 'card-header' },
+                React.createElement('div', { className: 'card-title', style: { color: '#ef4444' } }, '⚠ Overdue Deliveries')
+            ),
+            React.createElement('table', { className: 'table' },
+                React.createElement('thead', null,
+                    React.createElement('tr', null,
+                        React.createElement('th', null, 'PO Number'),
+                        React.createElement('th', null, 'Vendor'),
+                        React.createElement('th', null, 'Delivery Date'),
+                        React.createElement('th', null, 'Days Overdue'),
+                        React.createElement('th', null, 'Status')
+                    )
+                ),
+                React.createElement('tbody', null,
+                    overduePOs.map(function(po) {
+                        var vendor = (state.vendors || []).find(function(v) { return v.id === po.vendorId; });
+                        var daysOverdue = Math.floor((new Date() - new Date(po.deliveryDate)) / (1000 * 60 * 60 * 24));
+                        return React.createElement('tr', { key: po.id, style: { cursor: 'pointer' }, onClick: function() { window.location.hash = '#po/' + po.id; } },
+                            React.createElement('td', null,
+                                React.createElement('a', { href: '#po/' + po.id, style: { textDecoration: 'none', color: '#2563eb' } }, getPODisplayId(po))
+                            ),
+                            React.createElement('td', null, vendor ? vendor.name : ''),
+                            React.createElement('td', { style: { color: '#ef4444', fontWeight: 600 } }, new Date(po.deliveryDate).toLocaleDateString('en-IN')),
+                            React.createElement('td', null,
+                                React.createElement('span', { style: { background: '#fef2f2', color: '#dc2626', padding: '2px 8px', borderRadius: '4px', fontWeight: 600, fontSize: '13px' } }, daysOverdue + ' days')
+                            ),
+                            React.createElement('td', null, React.createElement(StatusBadge, { status: po.status }))
+                        );
+                    })
+                )
+            )
+        ) : null,
+
+        // Recent GRN Activity
+        React.createElement('div', { className: 'card' },
+            React.createElement('div', { className: 'card-header' },
+                React.createElement('div', { className: 'card-title' }, 'Recent GRN Activity')
+            ),
+            (function() {
+                var storeGrns = (state.grns || []).filter(function(g) {
+                    return storePOs.find(function(po) { return po.id === g.poId; });
+                }).sort(function(a, b) { return (b.createdAt || b.receivedAt || '').localeCompare(a.createdAt || a.receivedAt || ''); }).slice(0, 5);
+                if (storeGrns.length === 0) {
+                    return React.createElement('div', { style: { padding: '20px', textAlign: 'center', color: '#64748b' } }, 'No recent GRN activity');
+                }
+                return React.createElement('table', { className: 'table' },
+                    React.createElement('thead', null,
+                        React.createElement('tr', null,
+                            React.createElement('th', null, 'GRN Number'),
+                            React.createElement('th', null, 'PO'),
+                            React.createElement('th', null, 'Items'),
+                            React.createElement('th', null, 'Received By'),
+                            React.createElement('th', null, 'Date')
+                        )
+                    ),
+                    React.createElement('tbody', null,
+                        storeGrns.map(function(grn) {
+                            var po = storePOs.find(function(p) { return p.id === grn.poId; });
+                            var totalItems = (grn.items || []).reduce(function(sum, gi) { return sum + (gi.quantityReceived || 0); }, 0);
+                            if (totalItems === 0) totalItems = grn.quantityReceived || 0;
+                            return React.createElement('tr', { key: grn.id },
+                                React.createElement('td', { style: { fontFamily: 'monospace', fontSize: '13px' } }, grn.grnNumber || grn.id),
+                                React.createElement('td', null, po ? React.createElement('a', { href: '#po/' + po.id, style: { textDecoration: 'none', color: '#2563eb' } }, getPODisplayId(po)) : ''),
+                                React.createElement('td', null, totalItems + ' units'),
+                                React.createElement('td', null, getUserName(grn.receivedBy, state.users)),
+                                React.createElement('td', null, new Date(grn.createdAt || grn.receivedAt).toLocaleDateString('en-IN'))
+                            );
+                        })
+                    )
+                );
+            })()
+        )
+    );
+}
+
+// ============================================================================
+// 11b. STORE EXPECTED DELIVERIES SCREEN
+// ============================================================================
+
+function StoreExpectedDeliveriesScreen() {
+    var _ctx = React.useContext(AppContext);
+    var state = _ctx[0];
+    var storePOs = getStorePOs(state);
+    var today = new Date().toISOString().split('T')[0];
+
+    var expectedPOs = storePOs.filter(function(po) {
+        return po.status === 'issued' || po.status === 'partially_fulfilled';
+    }).sort(function(a, b) {
+        return (a.deliveryDate || '9999').localeCompare(b.deliveryDate || '9999');
+    });
+
+    return React.createElement('div', { className: 'card' },
+        React.createElement('div', { className: 'card-header' },
+            React.createElement('div', { className: 'card-title' }, 'Expected Deliveries'),
+            React.createElement('span', { style: { fontSize: '13px', color: '#64748b' } }, expectedPOs.length + ' pending')
+        ),
+        React.createElement('table', { className: 'table' },
+            React.createElement('thead', null,
+                React.createElement('tr', null,
+                    React.createElement('th', null, 'PO Number'),
+                    React.createElement('th', null, 'Vendor'),
+                    React.createElement('th', null, 'Delivery Date'),
+                    React.createElement('th', null, 'Status'),
+                    React.createElement('th', null, 'Items'),
+                    React.createElement('th', null, 'Actions')
+                )
+            ),
+            React.createElement('tbody', null,
+                expectedPOs.length === 0
+                    ? React.createElement('tr', null,
+                        React.createElement('td', { colSpan: '6', style: { textAlign: 'center', padding: '20px', color: '#64748b' } }, 'No expected deliveries')
+                    )
+                    : expectedPOs.map(function(po) {
+                        var vendor = (state.vendors || []).find(function(v) { return v.id === po.vendorId; });
+                        var isOverdue = po.deliveryDate && po.deliveryDate < today;
+                        var daysOverdue = isOverdue ? Math.floor((new Date() - new Date(po.deliveryDate)) / (1000 * 60 * 60 * 24)) : 0;
+                        var itemsSummary = (po.lineItems || []).map(function(li) { return (li.description || li.name || ''); }).join(', ');
+                        return React.createElement('tr', { key: po.id, style: isOverdue ? { backgroundColor: '#fef2f2' } : {} },
+                            React.createElement('td', null,
+                                React.createElement('a', { href: '#po/' + po.id, style: { textDecoration: 'none', color: '#2563eb', fontWeight: 600 } }, getPODisplayId(po))
+                            ),
+                            React.createElement('td', null, vendor ? vendor.name : ''),
+                            React.createElement('td', null,
+                                React.createElement('span', { style: { color: isOverdue ? '#dc2626' : '#1e293b', fontWeight: isOverdue ? 600 : 400 } },
+                                    po.deliveryDate ? new Date(po.deliveryDate).toLocaleDateString('en-IN') : 'Not set'
+                                ),
+                                isOverdue ? React.createElement('span', { style: { display: 'block', fontSize: '11px', color: '#dc2626', fontWeight: 600 } }, daysOverdue + ' days overdue') : null
+                            ),
+                            React.createElement('td', null, React.createElement(StatusBadge, { status: po.status })),
+                            React.createElement('td', { style: { fontSize: '13px', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, itemsSummary),
+                            React.createElement('td', null,
+                                React.createElement('a', { href: '#po/' + po.id, style: { textDecoration: 'none' } },
+                                    React.createElement('button', { className: 'btn btn-sm btn-success' }, 'Record Receipt')
+                                )
+                            )
+                        );
+                    })
+            )
+        )
+    );
+}
+
+// ============================================================================
+// 11c. STORE GRN HISTORY SCREEN
+// ============================================================================
+
+function StoreGRNHistoryScreen() {
+    var _ctx = React.useContext(AppContext);
+    var state = _ctx[0];
+    var storePOs = getStorePOs(state);
+    var storePOIds = storePOs.map(function(po) { return po.id; });
+
+    var storeGrns = (state.grns || []).filter(function(g) {
+        return storePOIds.includes(g.poId);
+    }).sort(function(a, b) {
+        return (b.createdAt || b.receivedAt || '').localeCompare(a.createdAt || a.receivedAt || '');
+    });
+
+    return React.createElement('div', { className: 'card' },
+        React.createElement('div', { className: 'card-header' },
+            React.createElement('div', { className: 'card-title' }, 'GRN History'),
+            React.createElement('span', { style: { fontSize: '13px', color: '#64748b' } }, storeGrns.length + ' records')
+        ),
+        React.createElement('table', { className: 'table' },
+            React.createElement('thead', null,
+                React.createElement('tr', null,
+                    React.createElement('th', null, 'GRN Number'),
+                    React.createElement('th', null, 'PO Number'),
+                    React.createElement('th', null, 'Vendor'),
+                    React.createElement('th', null, 'Items Received'),
+                    React.createElement('th', null, 'Received By'),
+                    React.createElement('th', null, 'Date'),
+                    React.createElement('th', null, 'Actions')
+                )
+            ),
+            React.createElement('tbody', null,
+                storeGrns.length === 0
+                    ? React.createElement('tr', null,
+                        React.createElement('td', { colSpan: '7', style: { textAlign: 'center', padding: '20px', color: '#64748b' } }, 'No GRN records')
+                    )
+                    : storeGrns.map(function(grn) {
+                        var po = storePOs.find(function(p) { return p.id === grn.poId; });
+                        var vendor = po ? (state.vendors || []).find(function(v) { return v.id === po.vendorId; }) : null;
+                        var grnItems = grn.items || [];
+                        var totalQty = grnItems.reduce(function(sum, gi) { return sum + (gi.quantityReceived || 0); }, 0);
+                        if (totalQty === 0) totalQty = grn.quantityReceived || 0;
+                        var hasIssues = grnItems.some(function(gi) { return gi.condition && gi.condition !== 'Good'; });
+
+                        return React.createElement('tr', { key: grn.id },
+                            React.createElement('td', null,
+                                React.createElement('span', { style: { fontFamily: 'monospace', fontSize: '13px' } }, grn.grnNumber || grn.id),
+                                hasIssues ? React.createElement('span', { style: { display: 'block', fontSize: '11px', color: '#dc2626', fontWeight: 600 } }, '⚠ Quality Issue') : null
+                            ),
+                            React.createElement('td', null, po ? React.createElement('a', { href: '#po/' + po.id, style: { textDecoration: 'none', color: '#2563eb' } }, getPODisplayId(po)) : ''),
+                            React.createElement('td', null, vendor ? vendor.name : ''),
+                            React.createElement('td', null,
+                                totalQty + ' units',
+                                grnItems.length > 0 ? React.createElement('span', { style: { display: 'block', fontSize: '11px', color: '#64748b' } }, grnItems.length + ' line items') : null
+                            ),
+                            React.createElement('td', null, getUserName(grn.receivedBy, state.users)),
+                            React.createElement('td', null, new Date(grn.createdAt || grn.receivedAt).toLocaleDateString('en-IN')),
+                            React.createElement('td', null,
+                                React.createElement('button', {
+                                    className: 'btn btn-sm btn-secondary',
+                                    onClick: function() { printGRN(grn, po, state); }
+                                }, 'Print')
+                            )
+                        );
+                    })
+            )
+        )
+    );
+}
+
+// ============================================================================
 // 11. STORE PENDING SCREEN
 // ============================================================================
 
@@ -10246,35 +10813,51 @@ function StoreAllScreen() {
 // ============================================================================
 
 function ReceiptEntryScreen({ indent, currentUserId }) {
-    const [state, dispatch] = React.useContext(AppContext);
-    const [receivingNow, setReceivingNow] = useState({});
-    const [photoFile, setPhotoFile] = useState(null);
-    const [photoPreview, setPhotoPreview] = useState(null);
+    var _ctx = React.useContext(AppContext);
+    var state = _ctx[0];
+    var dispatch = _ctx[1];
+    var _receivingNow = useState({});
+    var receivingNow = _receivingNow[0];
+    var setReceivingNow = _receivingNow[1];
+    var _conditions = useState({});
+    var conditions = _conditions[0];
+    var setConditions = _conditions[1];
+    var _qualityRemarks = useState({});
+    var qualityRemarks = _qualityRemarks[0];
+    var setQualityRemarks = _qualityRemarks[1];
+    var _photoFile = useState(null);
+    var photoFile = _photoFile[0];
+    var setPhotoFile = _photoFile[1];
+    var _photoPreview = useState(null);
+    var photoPreview = _photoPreview[0];
+    var setPhotoPreview = _photoPreview[1];
+    var _uploading = useState(false);
+    var uploading = _uploading[0];
+    var setUploading = _uploading[1];
 
-    const handleReceivingNowChange = (lineItemId, value) => {
-        const li = indent.lineItems.find(l => l.id === lineItemId);
-        setReceivingNow({
-            ...receivingNow,
+    var handleReceivingNowChange = function(lineItemId, value) {
+        var li = indent.lineItems.find(function(l) { return l.id === lineItemId; });
+        setReceivingNow(Object.assign({}, receivingNow, {
             [lineItemId]: Math.min(parseInt(value) || 0, (li ? li.qty : 0) - (li ? li.received : 0))
-        });
+        }));
     };
 
-    const handlePhotoChange = (e) => {
-        const file = e.target.files[0];
+    var handlePhotoChange = function(e) {
+        var file = e.target.files[0];
         if (file) {
             setPhotoFile(file);
-            const reader = new FileReader();
-            reader.onload = (event) => { setPhotoPreview(event.target.result); };
+            var reader = new FileReader();
+            reader.onload = function(event) { setPhotoPreview(event.target.result); };
             reader.readAsDataURL(file);
         }
     };
 
-    const handleSaveReceipt = () => {
-        const lineItemUpdates = {};
-        let hasAnyReceived = false;
+    var handleSaveReceipt = async function() {
+        var lineItemUpdates = {};
+        var hasAnyReceived = false;
 
-        indent.lineItems.forEach(li => {
-            const newAmount = receivingNow[li.id] || 0;
+        indent.lineItems.forEach(function(li) {
+            var newAmount = receivingNow[li.id] || 0;
             if (newAmount > 0) {
                 lineItemUpdates[li.id] = li.received + newAmount;
                 hasAnyReceived = true;
@@ -10288,18 +10871,37 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
             return;
         }
 
-        dispatch({ type: 'RECEIVE_ITEMS', payload: { indentId: indent.id, lineItemUpdates } });
+        // Upload photo if present
+        var photoUrl = '';
+        if (photoFile) {
+            setUploading(true);
+            try {
+                var filePath = 'indent-receipts/' + indent.id + '/' + Date.now() + '-' + photoFile.name;
+                var uploadResult = await supabaseClient.storage.from('receipts').upload(filePath, photoFile);
+                if (uploadResult.error) {
+                    console.warn('[NC_MIS] Photo upload failed:', uploadResult.error.message);
+                } else {
+                    var urlResult = supabaseClient.storage.from('receipts').getPublicUrl(filePath);
+                    photoUrl = urlResult.data ? urlResult.data.publicUrl : '';
+                }
+            } catch (uploadErr) {
+                console.warn('[NC_MIS] Photo upload error:', uploadErr);
+            }
+            setUploading(false);
+        }
 
-        const allFullyReceived = indent.lineItems.every(li => (lineItemUpdates[li.id] || li.received) >= li.qty);
-        const message = allFullyReceived ? 'Receipt saved - Indent completed' : 'Receipt saved successfully';
-        dispatch({ type: 'SHOW_TOAST', payload: { message, type: 'success' } });
+        dispatch({ type: 'RECEIVE_ITEMS', payload: { indentId: indent.id, lineItemUpdates, photoUrl: photoUrl } });
+
+        var allFullyReceived = indent.lineItems.every(function(li) { return (lineItemUpdates[li.id] || li.received) >= li.qty; });
+        var message = allFullyReceived ? 'Receipt saved - Indent completed' : 'Receipt saved successfully';
+        dispatch({ type: 'SHOW_TOAST', payload: { message: message, type: 'success' } });
         window.location.hash = '#store-pending';
     };
 
     return React.createElement('div', null,
         React.createElement('div', { className: 'card' },
             React.createElement('div', { className: 'card-header' },
-                React.createElement('div', { className: 'card-title' }, 'Record Receipt for ' + indent.id)
+                React.createElement('div', { className: 'card-title' }, 'Record Receipt for ' + getIndentDisplayId(indent, state.indents))
             ),
             React.createElement('div', { className: 'info-grid' },
                 React.createElement('div', { className: 'info-field' },
@@ -10321,38 +10923,67 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
             React.createElement('div', { className: 'card-header' },
                 React.createElement('div', { className: 'card-title' }, 'Line Items - Record Receipts')
             ),
-            React.createElement('table', { className: 'line-items-table' },
-                React.createElement('thead', null,
-                    React.createElement('tr', null,
-                        React.createElement('th', null, 'Material'),
-                        React.createElement('th', null, 'Qty Requested'),
-                        React.createElement('th', null, 'Already Received'),
-                        React.createElement('th', null, 'Remaining'),
-                        React.createElement('th', null, 'Unit'),
-                        React.createElement('th', null, 'Receiving Now')
+            React.createElement('div', { style: { overflowX: 'auto' } },
+                React.createElement('table', { className: 'line-items-table', style: { minWidth: '800px' } },
+                    React.createElement('thead', null,
+                        React.createElement('tr', null,
+                            React.createElement('th', null, 'Material'),
+                            React.createElement('th', null, 'Qty'),
+                            React.createElement('th', null, 'Received'),
+                            React.createElement('th', null, 'Remaining'),
+                            React.createElement('th', null, 'Unit'),
+                            React.createElement('th', null, 'Receiving Now'),
+                            React.createElement('th', null, 'Condition'),
+                            React.createElement('th', null, 'Quality Remarks')
+                        )
+                    ),
+                    React.createElement('tbody', null,
+                        indent.lineItems.map(function(li) {
+                            var remaining = li.qty - li.received;
+                            var receivingAmount = receivingNow[li.id] || 0;
+                            return React.createElement('tr', { key: li.id },
+                                React.createElement('td', null, li.description),
+                                React.createElement('td', null, li.qty),
+                                React.createElement('td', null, li.received),
+                                React.createElement('td', null, remaining),
+                                React.createElement('td', null, li.unit),
+                                React.createElement('td', null,
+                                    React.createElement('input', {
+                                        type: 'number', className: 'form-input',
+                                        style: { width: '70px' }, min: '0', max: remaining,
+                                        value: receivingAmount,
+                                        onChange: function(e) { handleReceivingNowChange(li.id, e.target.value); },
+                                        placeholder: '0'
+                                    })
+                                ),
+                                React.createElement('td', null,
+                                    React.createElement('select', {
+                                        value: conditions[li.id] || 'Good',
+                                        onChange: function(e) { setConditions(Object.assign({}, conditions, { [li.id]: e.target.value })); },
+                                        style: { padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '13px',
+                                            backgroundColor: (conditions[li.id] && conditions[li.id] !== 'Good') ? '#fef2f2' : '#fff',
+                                            color: (conditions[li.id] && conditions[li.id] !== 'Good') ? '#dc2626' : '#1e293b' }
+                                    },
+                                        React.createElement('option', { value: 'Good' }, 'Good'),
+                                        React.createElement('option', { value: 'Damaged' }, 'Damaged'),
+                                        React.createElement('option', { value: 'Partially Damaged' }, 'Partially Damaged'),
+                                        React.createElement('option', { value: 'Rejected' }, 'Rejected')
+                                    )
+                                ),
+                                React.createElement('td', null,
+                                    conditions[li.id] && conditions[li.id] !== 'Good'
+                                        ? React.createElement('input', {
+                                            type: 'text',
+                                            value: qualityRemarks[li.id] || '',
+                                            onChange: function(e) { setQualityRemarks(Object.assign({}, qualityRemarks, { [li.id]: e.target.value })); },
+                                            style: { width: '100%', padding: '4px 8px', border: '1px solid #fca5a5', borderRadius: '4px', fontSize: '13px', backgroundColor: '#fef2f2' },
+                                            placeholder: 'Describe issue...',
+                                        })
+                                        : null
+                                )
+                            );
+                        })
                     )
-                ),
-                React.createElement('tbody', null,
-                    indent.lineItems.map(li => {
-                        const remaining = li.qty - li.received;
-                        const receivingAmount = receivingNow[li.id] || 0;
-                        return React.createElement('tr', { key: li.id },
-                            React.createElement('td', null, li.description),
-                            React.createElement('td', null, li.qty),
-                            React.createElement('td', null, li.received),
-                            React.createElement('td', null, remaining),
-                            React.createElement('td', null, li.unit),
-                            React.createElement('td', null,
-                                React.createElement('input', {
-                                    type: 'number', className: 'form-input',
-                                    style: { width: '80px' }, min: '0', max: remaining,
-                                    value: receivingAmount,
-                                    onChange: (e) => handleReceivingNowChange(li.id, e.target.value),
-                                    placeholder: '0'
-                                })
-                            )
-                        );
-                    })
                 )
             )
         ),
@@ -10386,16 +11017,13 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
                             photoFile ? photoFile.name : ''
                         )
                     )
-                    : null,
-                React.createElement('div', { style: { marginTop: '12px', fontSize: '12px', color: '#64748b', fontStyle: 'italic' } },
-                    'Photo upload will be mandatory in future releases'
-                )
+                    : null
             )
         ),
 
         React.createElement('div', { className: 'action-buttons' },
-            React.createElement('button', { className: 'btn btn-success', onClick: handleSaveReceipt }, 'Save Receipt'),
-            React.createElement('button', { className: 'btn btn-secondary', onClick: () => { window.location.hash = '#store-pending'; } }, 'Cancel')
+            React.createElement('button', { className: 'btn btn-success', onClick: handleSaveReceipt, disabled: uploading }, uploading ? 'Uploading...' : 'Save Receipt'),
+            React.createElement('button', { className: 'btn btn-secondary', onClick: function() { window.location.hash = '#store-pending'; } }, 'Cancel')
         )
     );
 }
@@ -11185,9 +11813,12 @@ function App() {
         if (hash === '#procurement-progress') return { screen: 'procurement-progress' };
         if (hash === '#procurement-dashboard') return { screen: 'procurement-dashboard' };
         if (hash === '#clerk-assigned') return { screen: 'clerk-assigned' };
+        if (hash === '#store-dashboard') return { screen: 'store-dashboard' };
+        if (hash === '#store-expected') return { screen: 'store-expected' };
         if (hash === '#store-pending') return { screen: 'store-pending' };
         if (hash === '#store-new-indent') return { screen: 'store-new-indent' };
         if (hash === '#store-history') return { screen: 'store-history' };
+        if (hash === '#store-grn-history') return { screen: 'store-grn-history' };
         if (hash === '#store-all') return { screen: 'store-all' };
         if (hash === '#history') return { screen: 'history' };
         if (hash.startsWith('#indent/')) return { screen: 'indent-detail', indentId: hash.split('/')[1] };
@@ -11270,12 +11901,18 @@ function App() {
         screenContent = React.createElement(ProcurementDashboardScreen, null);
     } else if (routeInfo.screen === 'clerk-assigned') {
         screenContent = React.createElement(ClerkAssignedScreen, null);
+    } else if (routeInfo.screen === 'store-dashboard') {
+        screenContent = React.createElement(StoreDashboardScreen, null);
+    } else if (routeInfo.screen === 'store-expected') {
+        screenContent = React.createElement(StoreExpectedDeliveriesScreen, null);
     } else if (routeInfo.screen === 'store-pending') {
         screenContent = React.createElement(StorePendingScreen, null);
     } else if (routeInfo.screen === 'store-new-indent') {
         screenContent = React.createElement(StoreNewIndentScreen, null);
     } else if (routeInfo.screen === 'store-history') {
         screenContent = React.createElement(StoreHistoryScreen, null);
+    } else if (routeInfo.screen === 'store-grn-history') {
+        screenContent = React.createElement(StoreGRNHistoryScreen, null);
     } else if (routeInfo.screen === 'store-all') {
         screenContent = React.createElement(StoreAllScreen, null);
     } else if (routeInfo.screen === 'history') {
