@@ -1707,60 +1707,80 @@ async function supabaseSync(action, state) {
 
             case 'SUBMIT_PO_FOR_APPROVAL': {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'pending_md_approval', submitted_at: new Date().toISOString(), submitted_by: state.currentUserId })
+                    .update({ status: 'pending_md_approval', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'submit PO');
                 break;
             }
 
             case 'MD_APPROVE_PO': {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: state.currentUserId })
+                    .update({ status: 'approved', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'approve PO');
                 break;
             }
 
             case 'MD_REJECT_PO': {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'draft', rejected_at: new Date().toISOString(), rejected_by: state.currentUserId })
+                    .update({ status: 'draft', remarks: 'MD Rejected: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'MD reject PO');
                 break;
             }
 
             case 'APPROVE_PO': {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: state.currentUserId })
+                    .update({ status: 'approved', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'approve PO');
                 break;
             }
 
             case 'REJECT_PO': {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'draft', rejected_at: new Date().toISOString(), rejected_by: state.currentUserId, reject_reason: action.payload.reason || '' })
+                    .update({ status: 'draft', remarks: 'Rejected: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'reject PO');
                 break;
             }
 
             case 'ISSUE_PO': {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'issued', issued_at: new Date().toISOString(), issued_by: state.currentUserId })
+                    .update({ status: 'issued', issued_at: new Date().toISOString(), updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'issue PO');
+                break;
+            }
+
+            case 'FINALIZE_PO': {
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'issued', issued_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+                    .eq('id', action.payload.poId), 'finalize PO');
                 break;
             }
 
             case 'RECEIVE_AGAINST_PO': {
                 var receipts = action.payload.receipts || [];
                 var grnId = genUUID();
-                var grnRows = receipts.map(function(r, ri) {
+                var grnNumber = 'GRN-' + new Date().getFullYear() + '-' + Date.now().toString(36).toUpperCase();
+
+                // Insert GRN header
+                sbCheck(await supabaseClient.schema('indent_flow').from('grns').insert({
+                    id: grnId,
+                    grn_number: grnNumber,
+                    po_id: action.payload.poId,
+                    received_by: state.currentUserId,
+                    remarks: action.payload.remarks || '',
+                }), 'insert GRN');
+
+                // Insert GRN line items
+                var grnItemRows = receipts.map(function(r) {
                     return {
-                        id: grnId + '-' + ri,
-                        po_id: action.payload.poId,
-                        line_item_id: r.lineItemId,
+                        id: genUUID(),
+                        grn_id: grnId,
+                        po_line_item_id: r.lineItemId,
                         quantity_received: parseFloat(r.quantityReceived) || 0,
-                        received_by: state.currentUserId,
                         remarks: r.remarks || '',
                     };
                 });
-                sbCheck(await supabaseClient.schema('indent_flow').from('grns').insert(grnRows), 'insert GRN');
+                if (grnItemRows.length > 0) {
+                    sbCheck(await supabaseClient.schema('indent_flow').from('grn_items').insert(grnItemRows), 'insert GRN items');
+                }
 
                 // Update PO line item received quantities
                 for (var gi = 0; gi < receipts.length; gi++) {
@@ -1781,14 +1801,14 @@ async function supabaseSync(action, state) {
 
             case 'CLOSE_PO': {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'closed', closed_at: new Date().toISOString(), closed_by: state.currentUserId })
+                    .update({ status: 'closed', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'close PO');
                 break;
             }
 
             case 'CANCEL_PO': {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), cancelled_by: state.currentUserId, cancel_reason: action.payload.reason || '' })
+                    .update({ status: 'cancelled', remarks: 'Cancelled: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'cancel PO');
                 break;
             }
@@ -2133,28 +2153,13 @@ async function supabaseSync(action, state) {
             }
 
             case 'REQUEST_MD_PO_APPROVAL': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'pending_md_approval' }).eq('id', action.payload.poId);
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'pending_md_approval', updated_at: new Date().toISOString() })
+                    .eq('id', action.payload.poId), 'request MD PO approval');
                 break;
             }
 
-            case 'MD_APPROVE_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'approved' }).eq('id', action.payload.poId);
-                break;
-            }
-
-            case 'MD_REJECT_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'draft', remarks: 'MD Rejected: ' + (action.payload.reason || '') }).eq('id', action.payload.poId);
-                break;
-            }
-
-            case 'FINALIZE_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'issued' }).eq('id', action.payload.poId);
-                break;
-            }
+            // MD_APPROVE_PO, MD_REJECT_PO, and FINALIZE_PO are handled in the var-based section above
 
             case 'ATTACH_EXTERNAL_PO': {
                 await safeIndentUpdate(action.payload.indentId,
@@ -2178,9 +2183,9 @@ async function supabaseSync(action, state) {
             }
 
             case 'AMEND_PO': {
-                await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'draft', amended_at: new Date().toISOString(), amended_by: state.currentUserId })
-                    .eq('id', action.payload.poId);
+                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .update({ status: 'draft', remarks: 'Amended', updated_at: new Date().toISOString() })
+                    .eq('id', action.payload.poId), 'amend PO');
                 break;
             }
 
@@ -5478,7 +5483,7 @@ function PODetailScreen(_ref) {
 
   return React.createElement('div', { style: { padding: '20px', maxWidth: '900px' } },
     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' } },
-      React.createElement('h2', { style: { margin: 0 } }, 'Purchase Order: ' + po.id),
+      React.createElement('h2', { style: { margin: 0 } }, 'Purchase Order: ' + getPODisplayId(po)),
       React.createElement('a', { href: '#procurement-pos', style: { color: '#3b82f6', textDecoration: 'none', fontSize: '14px' } }, 'Back to POs')
     ),
     React.createElement('div', { style: { background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '20px' } },
@@ -8936,8 +8941,10 @@ function CreatePOScreen({ indentId }) {
                     id: li.id,
                     description: li.description,
                     qty: li.qty,
+                    quantity: li.qty,
                     unit: li.unit,
                     rate: itemRates[li.id] || 0,
+                    unitPrice: itemRates[li.id] || 0,
                     amount: calcs.baseAmount,
                     gstPercent: calcs.gstPct,
                     gstAmount: calcs.gstAmount,
