@@ -1252,10 +1252,11 @@ function transformBoqLists(rows) {
             if (!result[siteId]) result[siteId] = [];
             result[siteId].push({
                 id: row.id,
-                name: row.name || '',
+                name: row.name || row.description || '',
                 unit: row.unit || '',
                 category: row.category || '',
-                hsn: row.hsn || '',
+                hsn: row.hsn || row.serial_no || '',
+                rate: row.rate || 0,
             });
         });
     }
@@ -1343,6 +1344,52 @@ function sbCheck(result, label) {
     return result;
 }
 
+// Safe update helper: tries update, if column-missing error, strips optional fields and retries
+// This prevents the entire update from failing when optional columns haven't been added to DB yet
+// PostgREST error messages:
+//   - "Could not find the 'col_name' column of 'table' in the schema cache"
+//   - "column table.col_name does not exist"
+function extractMissingColumn(errMsg) {
+    var m = errMsg.match(/find the '(\w+)' column/) || errMsg.match(/column\s+\w+\.(\w+)\s+does not exist/);
+    return m ? m[1] : null;
+}
+
+async function safeIndentUpdate(indentId, fields, label) {
+    var res = await supabaseClient.schema('indent_flow').from('indents')
+        .update(fields).eq('id', indentId);
+    if (res.error) {
+        var errMsg = res.error.message || '';
+        var missingCol = extractMissingColumn(errMsg);
+        if (missingCol && fields[missingCol] !== undefined) {
+            console.warn('[NC_MIS] Column "' + missingCol + '" missing in DB, retrying without it. Label: ' + label);
+            var retryFields = Object.assign({}, fields);
+            delete retryFields[missingCol];
+            res = await supabaseClient.schema('indent_flow').from('indents')
+                .update(retryFields).eq('id', indentId);
+            // If STILL failing with another missing column, try stripping that too
+            if (res.error) {
+                var missingCol2 = extractMissingColumn(res.error.message || '');
+                if (missingCol2 && retryFields[missingCol2] !== undefined) {
+                    console.warn('[NC_MIS] Column "' + missingCol2 + '" also missing, retrying. Label: ' + label);
+                    delete retryFields[missingCol2];
+                    res = await supabaseClient.schema('indent_flow').from('indents')
+                        .update(retryFields).eq('id', indentId);
+                }
+                // If STILL failing, last resort: status only
+                if (res.error && extractMissingColumn(res.error.message || '')) {
+                    console.warn('[NC_MIS] Multiple columns missing, keeping only status. Label: ' + label);
+                    if (fields.status) {
+                        res = await supabaseClient.schema('indent_flow').from('indents')
+                            .update({ status: fields.status }).eq('id', indentId);
+                    }
+                }
+            }
+        }
+    }
+    sbCheck(res, label);
+    return res;
+}
+
 async function supabaseSync(action, state) {
     try {
         switch (action.type) {
@@ -1412,9 +1459,7 @@ async function supabaseSync(action, state) {
             }
 
             case 'APPROVE_INDENT': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ status: 'approved' })
-                    .eq('id', action.payload.indentId), 'approve indent');
+                await safeIndentUpdate(action.payload.indentId, { status: 'approved' }, 'approve indent');
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
@@ -1430,9 +1475,9 @@ async function supabaseSync(action, state) {
                 var newStatus = isReturn ? 'returned_for_revision' : 'rejected';
                 var actionLabel = isReturn ? 'Returned for Revision' : 'Rejected';
 
-                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ status: newStatus, rejection_reason: action.payload.reason || '' })
-                    .eq('id', action.payload.indentId), 'reject indent');
+                await safeIndentUpdate(action.payload.indentId,
+                    { status: newStatus, rejection_reason: action.payload.reason || '' },
+                    'reject indent');
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
@@ -1444,9 +1489,9 @@ async function supabaseSync(action, state) {
             }
 
             case 'ESCALATE_TO_MD': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ status: 'escalated_to_md', escalation_remarks: action.payload.remarks || '' })
-                    .eq('id', action.payload.indentId), 'escalate indent');
+                await safeIndentUpdate(action.payload.indentId,
+                    { status: 'escalated_to_md', escalation_remarks: action.payload.remarks || '' },
+                    'escalate indent');
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
@@ -1458,9 +1503,9 @@ async function supabaseSync(action, state) {
             }
 
             case 'ASSIGN_INDENT': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ status: 'in_procurement', assigned_to: action.payload.userId })
-                    .eq('id', action.payload.indentId), 'assign indent');
+                await safeIndentUpdate(action.payload.indentId,
+                    { status: 'in_procurement', assigned_to: action.payload.userId },
+                    'assign indent');
 
                 var assigneeName = '';
                 var assigneeUser = (state.users || []).find(function(u) { return u.id === action.payload.userId; });
@@ -1476,15 +1521,13 @@ async function supabaseSync(action, state) {
             }
 
             case 'REVISE_RESUBMIT': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                    .update({
-                        status: 'pending_approval',
-                        is_revised: true,
-                        revision_count: (action.payload.revisionCount || 0) + 1,
-                        notes: action.payload.notes || '',
-                        submitted_at: new Date().toISOString(),
-                    })
-                    .eq('id', action.payload.indentId), 'revise indent');
+                await safeIndentUpdate(action.payload.indentId, {
+                    status: 'pending_approval',
+                    is_revised: true,
+                    revision_count: (action.payload.revisionCount || 0) + 1,
+                    notes: action.payload.notes || '',
+                    submitted_at: new Date().toISOString(),
+                }, 'revise indent');
 
                 // Delete old line items and insert new ones
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items')
@@ -1600,9 +1643,9 @@ async function supabaseSync(action, state) {
                     sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items').insert(poLiRows), 'insert PO line items');
                 }
 
-                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ status: 'po_draft', linked_po: po.id })
-                    .eq('id', action.payload.indentId), 'link PO to indent');
+                await safeIndentUpdate(action.payload.indentId,
+                    { status: 'po_draft', linked_po: po.id },
+                    'link PO to indent');
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
@@ -1738,8 +1781,7 @@ async function supabaseSync(action, state) {
 
             case 'MARK_DISPATCHED': {
                 var indentId = typeof action.payload === 'string' ? action.payload : action.payload.indentId;
-                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ status: 'dispatched' }).eq('id', indentId), 'mark dispatched');
+                await safeIndentUpdate(indentId, { status: 'dispatched' }, 'mark dispatched');
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: indentId,
@@ -1768,8 +1810,7 @@ async function supabaseSync(action, state) {
                     });
                     var allDone = updatedLIs.every(function(li) { return li.received >= li.qty; });
                     if (allDone) {
-                        sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                            .update({ status: 'completed' }).eq('id', recIndentId), 'mark indent completed');
+                        await safeIndentUpdate(recIndentId, { status: 'completed' }, 'mark indent completed');
                     }
                 }
 
@@ -1784,9 +1825,9 @@ async function supabaseSync(action, state) {
 
             case 'SUBMIT_DRAFT': {
                 var draftId = typeof action.payload === 'string' ? action.payload : action.payload.indentId;
-                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ status: 'pending_approval', submitted_at: new Date().toISOString() })
-                    .eq('id', draftId), 'submit draft');
+                await safeIndentUpdate(draftId,
+                    { status: 'pending_approval', submitted_at: new Date().toISOString() },
+                    'submit draft');
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: draftId,
@@ -1798,9 +1839,9 @@ async function supabaseSync(action, state) {
             }
 
             case 'UPDATE_DRAFT': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ description: action.payload.description || '', notes: action.payload.notes || '' })
-                    .eq('id', action.payload.indentId), 'update draft');
+                await safeIndentUpdate(action.payload.indentId,
+                    { description: action.payload.description || '', notes: action.payload.notes || '' },
+                    'update draft');
 
                 // Replace line items
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items')
@@ -1867,8 +1908,7 @@ async function supabaseSync(action, state) {
                 var ids = action.payload.indentIds || [];
                 var bulkApprovedBy = action.payload.approvedBy || state.currentUserId;
                 for (var bi = 0; bi < ids.length; bi++) {
-                    sbCheck(await supabaseClient.schema('indent_flow').from('indents')
-                        .update({ status: 'approved' }).eq('id', ids[bi]), 'bulk approve');
+                    await safeIndentUpdate(ids[bi], { status: 'approved' }, 'bulk approve');
 
                     sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                         indent_id: ids[bi],
@@ -2049,9 +2089,9 @@ async function supabaseSync(action, state) {
             case 'MD_ESCALATION_DISMISS': {
                 // Already handled ESCALATE_TO_MD above, handle the MD responses
                 if (action.type === 'MD_ESCALATION_APPROVE') {
-                    await supabaseClient.schema('indent_flow').from('indents')
-                        .update({ status: 'in_procurement', md_escalation_result: 'approved', md_remarks: action.payload.remarks || '' })
-                        .eq('id', action.payload.indentId);
+                    await safeIndentUpdate(action.payload.indentId,
+                        { status: 'in_procurement', md_escalation_result: 'approved', md_remarks: action.payload.remarks || '' },
+                        'md escalation approve');
 
                     await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                         indent_id: action.payload.indentId,
@@ -2060,9 +2100,9 @@ async function supabaseSync(action, state) {
                         note: action.payload.remarks || '',
                     });
                 } else if (action.type === 'MD_ESCALATION_DISMISS') {
-                    await supabaseClient.schema('indent_flow').from('indents')
-                        .update({ status: 'returned_for_revision', md_escalation_result: 'dismissed', md_remarks: action.payload.remarks || '' })
-                        .eq('id', action.payload.indentId);
+                    await safeIndentUpdate(action.payload.indentId,
+                        { status: 'returned_for_revision', md_escalation_result: 'dismissed', md_remarks: action.payload.remarks || '' },
+                        'md escalation dismiss');
 
                     await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                         indent_id: action.payload.indentId,
@@ -2099,16 +2139,16 @@ async function supabaseSync(action, state) {
             }
 
             case 'ATTACH_EXTERNAL_PO': {
-                await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ status: 'po_issued', external_po: action.payload.fileName, linked_po: 'external' })
-                    .eq('id', action.payload.indentId);
+                await safeIndentUpdate(action.payload.indentId,
+                    { status: 'po_issued', external_po: action.payload.fileName, linked_po: 'external' },
+                    'attach external PO');
                 break;
             }
 
             case 'RETURN_FOR_REVISION': {
-                await supabaseClient.schema('indent_flow').from('indents')
-                    .update({ status: 'returned_for_revision', return_reason: action.payload.reason || '' })
-                    .eq('id', action.payload.indentId);
+                await safeIndentUpdate(action.payload.indentId,
+                    { status: 'returned_for_revision', return_reason: action.payload.reason || '' },
+                    'return for revision');
 
                 await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
