@@ -1461,6 +1461,19 @@ async function syncIndentStatusForPO(poId, indentStatus, label, indentId) {
     return res;
 }
 
+// Updates a PO row and fails loudly when nothing was updated (row missing because an
+// earlier save failed, or the signed-in role is not allowed to change it). Without the
+// row check Supabase reports success for an update that touched zero rows.
+async function updatePO(poId, fields, label) {
+    var res = await supabaseClient.schema('indent_flow').from('purchase_orders')
+        .update(fields).eq('id', poId).select('id');
+    sbCheck(res, label);
+    if (!res.data || res.data.length === 0) {
+        throw new Error(label + ': purchase order was not updated in the database (it was not saved, or your role cannot change it)');
+    }
+    return res;
+}
+
 // Local notification ids already written to the DB (avoids duplicates across queued syncs)
 var _syncedNotifIds = {};
 
@@ -1759,8 +1772,7 @@ async function supabaseSync(action, state, postState) {
                 if (_updPo) dbUpdates.version = (_updPo.version || 1) + 1;
                 dbUpdates.updated_at = new Date().toISOString();
 
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update(dbUpdates).eq('id', action.payload.poId), 'update PO');
+                await updatePO(action.payload.poId, dbUpdates, 'update PO');
 
                 if (updates.lineItems) {
                     sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items')
@@ -1783,57 +1795,43 @@ async function supabaseSync(action, state, postState) {
             }
 
             case 'SUBMIT_PO_FOR_APPROVAL': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'pending_approval', updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'submit PO');
+                await updatePO(action.payload.poId, { status: 'pending_approval', updated_at: new Date().toISOString() }, 'submit PO');
                 await syncIndentStatusForPO(action.payload.poId, 'pending_md_po_approval', 'indent status after PO submit');
                 break;
             }
 
             case 'MD_APPROVE_PO': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'approved', updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'approve PO');
+                await updatePO(action.payload.poId, { status: 'approved', updated_at: new Date().toISOString() }, 'approve PO');
                 await syncIndentStatusForPO(action.payload.poId, 'po_approved', 'indent status after PO approval');
                 break;
             }
 
             case 'MD_REJECT_PO': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'draft', remarks: 'MD Rejected: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'MD reject PO');
+                await updatePO(action.payload.poId, { status: 'draft', remarks: 'MD Rejected: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() }, 'MD reject PO');
                 await syncIndentStatusForPO(action.payload.poId, 'po_draft', 'indent status after MD PO rejection');
                 break;
             }
 
             case 'APPROVE_PO': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'approved', updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'approve PO');
+                await updatePO(action.payload.poId, { status: 'approved', updated_at: new Date().toISOString() }, 'approve PO');
                 await syncIndentStatusForPO(action.payload.poId, 'po_approved', 'indent status after PO approval');
                 break;
             }
 
             case 'REJECT_PO': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'draft', remarks: 'Rejected: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'reject PO');
+                await updatePO(action.payload.poId, { status: 'draft', remarks: 'Rejected: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() }, 'reject PO');
                 await syncIndentStatusForPO(action.payload.poId, 'po_draft', 'indent status after PO rejection');
                 break;
             }
 
             case 'ISSUE_PO': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'issued', issued_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'issue PO');
+                await updatePO(action.payload.poId, { status: 'issued', issued_at: new Date().toISOString(), updated_at: new Date().toISOString() }, 'issue PO');
                 await syncIndentStatusForPO(action.payload.poId, 'po_issued', 'indent status after PO issue');
                 break;
             }
 
             case 'FINALIZE_PO': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'issued', issued_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'finalize PO');
+                await updatePO(action.payload.poId, { status: 'issued', issued_at: new Date().toISOString(), updated_at: new Date().toISOString() }, 'finalize PO');
                 await syncIndentStatusForPO(action.payload.poId, 'po_issued', 'indent status after PO finalize');
                 break;
             }
@@ -1907,17 +1905,13 @@ async function supabaseSync(action, state, postState) {
             }
 
             case 'CLOSE_PO': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'closed', updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'close PO');
+                await updatePO(action.payload.poId, { status: 'closed', updated_at: new Date().toISOString() }, 'close PO');
                 await syncIndentStatusForPO(action.payload.poId, 'completed', 'indent status after PO close');
                 break;
             }
 
             case 'CANCEL_PO': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'cancelled', remarks: 'Cancelled: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'cancel PO');
+                await updatePO(action.payload.poId, { status: 'cancelled', remarks: 'Cancelled: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() }, 'cancel PO');
                 break;
             }
 
@@ -2261,9 +2255,7 @@ async function supabaseSync(action, state, postState) {
             }
 
             case 'REQUEST_MD_PO_APPROVAL': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'pending_approval', updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'request MD PO approval');
+                await updatePO(action.payload.poId, { status: 'pending_approval', updated_at: new Date().toISOString() }, 'request MD PO approval');
                 await syncIndentStatusForPO(action.payload.poId, 'pending_md_po_approval', 'indent status after MD approval request', action.payload.indentId);
                 break;
             }
@@ -2296,8 +2288,7 @@ async function supabaseSync(action, state, postState) {
                 // Persist the version bump the reducer applied (state is pre-reducer here)
                 var _amdPo = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
                 if (_amdPo) _amd.version = (_amdPo.version || 1) + 1;
-                sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update(_amd).eq('id', action.payload.poId), 'amend PO');
+                await updatePO(action.payload.poId, _amd, 'amend PO');
                 await syncIndentStatusForPO(action.payload.poId, 'po_draft', 'indent status after PO amendment');
                 break;
             }
@@ -9286,12 +9277,14 @@ function CreatePOScreen({ indentId }) {
 
     const site = state.sites.find(s => s.id === indent.siteId);
     const getNextPONumber = () => {
+        // Number from the PO number (po.id is a UUID), within the current year
+        const year = new Date().getFullYear();
         const existing = (state.purchaseOrders || []).map(po => {
-            const match = (po.id || '').match(/PO-\d{4}-(\d{4})/);
-            return match ? parseInt(match[1]) : 0;
+            const match = String(po.poNumber || '').match(/^PO-(\d{4})-(\d{4,})$/);
+            return match && parseInt(match[1]) === year ? parseInt(match[2]) : 0;
         });
         const maxNum = existing.length > 0 ? Math.max(...existing) : 0;
-        return 'PO-2026-' + String(maxNum + 1).padStart(4, '0');
+        return 'PO-' + year + '-' + String(maxNum + 1).padStart(4, '0');
     };
     const poNumber = getNextPONumber();
 
