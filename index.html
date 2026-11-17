@@ -1367,9 +1367,12 @@ async function loadAllData(userId) {
             return {
                 id: n.id,
                 userId: n.user_id,
-                indentId: n.indent_id,
+                // The notifications table has link/is_read (no indent_id/read columns)
+                indentId: (n.link && n.link.indexOf('#indent/') === 0) ? n.link.slice(8) : null,
+                link: n.link || '',
+                title: n.title || '',
                 message: n.message,
-                read: n.read || false,
+                read: n.is_read || false,
                 createdAt: n.created_at,
             };
         }),
@@ -1457,6 +1460,9 @@ async function syncIndentStatusForPO(poId, indentStatus, label, indentId) {
     sbCheck(res, label);
     return res;
 }
+
+// Local notification ids already written to the DB (avoids duplicates across queued syncs)
+var _syncedNotifIds = {};
 
 async function supabaseSync(action, state, postState) {
     try {
@@ -1871,34 +1877,10 @@ async function supabaseSync(action, state, postState) {
                     sbCheck(await supabaseClient.schema('indent_flow').from('grn_items').insert(grnItemRows), 'insert GRN items');
                 }
 
-                // Update PO line item received quantities
-                for (var gi = 0; gi < receipts.length; gi++) {
-                    var receipt = receipts[gi];
-                    var qty = parseFloat(receipt.quantityReceived) || 0;
-                    if (qty > 0) {
-                        var liRes = await supabaseClient.schema('indent_flow').from('po_line_items')
-                            .select('received_qty').eq('id', receipt.lineItemId).single();
-                        if (liRes.data) {
-                            var newReceivedQty = (liRes.data.received_qty || 0) + qty;
-                            sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items')
-                                .update({ received_qty: newReceivedQty }).eq('id', receipt.lineItemId), 'update received qty');
-                        }
-                    }
-                }
-
-                // Derive the PO status from the received quantities now stored in the DB
+                // Received quantities and the PO status (partially_fulfilled / fulfilled) are
+                // applied in the database by the trigger on grn_items, because the storekeeper
+                // role is not allowed to update purchase orders directly.
                 var _rap_po = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
-                var _rap_liRes = sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items')
-                    .select('quantity, received_qty').eq('po_id', action.payload.poId), 'read PO line items after receipt');
-                var _rap_lis = (_rap_liRes && _rap_liRes.data) || [];
-                var _rap_any = _rap_lis.some(function(li) { return (Number(li.received_qty) || 0) > 0; });
-                var _rap_all = _rap_lis.length > 0 && _rap_lis.every(function(li) { return (Number(li.received_qty) || 0) >= (Number(li.quantity) || 0); });
-                var _rap_status = _rap_all ? 'fulfilled' : (_rap_any ? 'partially_fulfilled' : null);
-                if (_rap_status) {
-                    sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                        .update({ status: _rap_status, updated_at: new Date().toISOString() })
-                        .eq('id', action.payload.poId), 'update PO status after receipt');
-                }
 
                 // Sync discrepancy notifications — check if any receipts had non-Good condition
                 var _sync_discrepancies = [];
@@ -1914,9 +1896,10 @@ async function supabaseSync(action, state, postState) {
                         sbCheck(await supabaseClient.schema('indent_flow').from('notifications').insert({
                             id: genUUID(),
                             user_id: _sync_procUsers[ni].id,
-                            indent_id: null,
+                            title: 'Quality issue on receipt',
                             message: _sync_msg,
-                            read: false,
+                            link: '#po/' + action.payload.poId,
+                            is_read: false,
                         }), 'insert discrepancy notification');
                     }
                 }
@@ -1927,6 +1910,7 @@ async function supabaseSync(action, state, postState) {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'closed', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'close PO');
+                await syncIndentStatusForPO(action.payload.poId, 'completed', 'indent status after PO close');
                 break;
             }
 
@@ -2136,7 +2120,7 @@ async function supabaseSync(action, state, postState) {
             case 'MARK_NOTIFICATION_READ': {
                 if (action.type === 'MARK_NOTIFICATION_READ') {
                     await supabaseClient.schema('indent_flow').from('notifications')
-                        .update({ read: true }).eq('id', action.payload);
+                        .update({ is_read: true }).eq('id', action.payload);
                 }
                 break;
             }
@@ -2407,19 +2391,30 @@ async function supabaseSync(action, state, postState) {
                 break;
         }
 
-        // Sync notifications that were generated by the reducer
-        // The reducer adds notifications to state; we need to insert them
-        if (action._generatedNotifications && action._generatedNotifications.length > 0) {
-            var notifRows = action._generatedNotifications.map(function(n) {
-                return {
-                    id: n.id,
-                    user_id: n.userId,
-                    indent_id: n.indentId,
-                    message: n.message,
-                    read: false,
-                };
+        // Persist notifications the reducer created for this action (ids starting 'notif-'
+        // are local-only; rows loaded from the DB have UUID ids). The receipt flow inserts
+        // its own, richer notification above. Failures are logged, not fatal.
+        if (postState && action.type !== 'RECEIVE_AGAINST_PO') {
+            var _preNotifIds = {};
+            ((state || {}).notifications || []).forEach(function(n) { _preNotifIds[n.id] = true; });
+            var _newNotifs = (postState.notifications || []).filter(function(n) {
+                return n && typeof n.id === 'string' && n.id.indexOf('notif-') === 0 && !_preNotifIds[n.id] && !_syncedNotifIds[n.id] && n.userId;
             });
-            await supabaseClient.schema('indent_flow').from('notifications').insert(notifRows);
+            if (_newNotifs.length > 0) {
+                _newNotifs.forEach(function(n) { _syncedNotifIds[n.id] = true; });
+                var notifRows = _newNotifs.map(function(n) {
+                    return {
+                        id: genUUID(),
+                        user_id: n.userId,
+                        title: n.title || 'IndentFlow update',
+                        message: n.message || '',
+                        link: n.link || (n.indentId ? '#indent/' + n.indentId : null),
+                        is_read: false,
+                    };
+                });
+                var _notifRes = await supabaseClient.schema('indent_flow').from('notifications').insert(notifRows);
+                if (_notifRes.error) console.error('[NC_MIS] Could not save notifications for ' + action.type + ':', _notifRes.error);
+            }
         }
 
     } catch (err) {
@@ -3570,6 +3565,12 @@ function appReducer(state, action) {
                 ...state,
                 purchaseOrders: state.purchaseOrders.map(function(po) {
                     return po.id === action.payload.poId ? Object.assign({}, po, { status: 'closed', closedAt: new Date().toISOString(), closedBy: state.currentUserId }) : po;
+                }),
+                // Closing the PO completes the indent it was raised for
+                indents: state.indents.map(function(ind) {
+                    return ind.linkedPO === action.payload.poId
+                        ? Object.assign({}, ind, { status: 'completed', activityLog: addActivityLog(ind, 'PO Closed — Indent Completed', state.currentUserId, 'PO ' + action.payload.poId + ' closed') })
+                        : ind;
                 }),
             };
         }
