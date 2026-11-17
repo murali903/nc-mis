@@ -1143,6 +1143,22 @@ function transformIndent(row) {
     return indent;
 }
 
+// POs loaded from the DB carry only vendor_id; fill in the vendor name and a
+// total (from line items when the stored total is missing) for display.
+function hydratePOs(pos, vendors) {
+    return (pos || []).map(function(po) {
+        var patch = {};
+        if (!po.vendorName) {
+            var v = (vendors || []).find(function(x) { return x.id === po.vendorId; });
+            if (v) patch.vendorName = v.name;
+        }
+        if (!po.totalAmount && po.lineItems && po.lineItems.length) {
+            patch.totalAmount = po.lineItems.reduce(function(sum, li) { return sum + (li.amountWithGst || 0); }, 0);
+        }
+        return (patch.vendorName !== undefined || patch.totalAmount !== undefined) ? Object.assign({}, po, patch) : po;
+    });
+}
+
 function transformPO(row) {
     return {
         id: row.id,
@@ -1173,16 +1189,32 @@ function transformPO(row) {
         deliveryAddress: row.delivery_address || '',
         notes: row.notes || '',
         officeId: row.office_id || '',
-        lineItems: (row.po_line_items || []).map(function(li) {
+        remarks: row.remarks || '',
+        vendorName: row.vendor_name || '',
+        totalAmount: Number(row.total_amount) || 0,
+        lineItems: (row.po_line_items || []).slice().sort(function(a, b) {
+            return (a.sort_order || 0) - (b.sort_order || 0);
+        }).map(function(li) {
+            // The DB stores only quantity, unit price and GST %; amounts are derived here
+            var _qty = Number(li.quantity || li.qty) || 0;
+            var _rate = Number(li.unit_price || li.rate) || 0;
+            var _gstPct = (li.gst_percent !== undefined && li.gst_percent !== null) ? Number(li.gst_percent) : 18;
+            var _base = _qty * _rate;
+            var _gstAmt = _base * _gstPct / 100;
             return {
                 id: li.id,
+                name: li.description || '',
                 description: li.description || '',
-                quantity: li.quantity || li.qty || 0,
-                qty: li.quantity || li.qty || 0,
+                quantity: _qty,
+                qty: _qty,
                 unit: li.unit || '',
-                unitPrice: li.unit_price || 0,
-                gstPercent: li.gst_percent !== undefined ? li.gst_percent : 18,
-                receivedQty: li.received_qty || 0,
+                rate: _rate,
+                unitPrice: _rate,
+                amount: _base + _gstAmt, // GST-inclusive, matching the PO edit form and PO total
+                gstPercent: _gstPct,
+                gstAmount: _gstAmt,
+                amountWithGst: _base + _gstAmt,
+                receivedQty: Number(li.received_qty) || 0,
                 hsn: li.hsn || '',
             };
         }),
@@ -1405,7 +1437,22 @@ async function safeIndentUpdate(indentId, fields, label) {
     return res;
 }
 
-async function supabaseSync(action, state) {
+// Keeps the linked indent's status in step with its PO. The PO row is the source
+// of truth, so a status the indents check constraint does not allow yet is logged
+// (with the fix) instead of failing the whole action.
+async function syncIndentStatusForPO(poId, indentStatus, label, indentId) {
+    var q = supabaseClient.schema('indent_flow').from('indents').update({ status: indentStatus });
+    q = indentId ? q.eq('id', indentId) : q.eq('linked_po', poId);
+    var res = await q;
+    if (res.error && res.error.code === '23514') {
+        console.error('[NC_MIS] Indent status "' + indentStatus + '" is not allowed by the indents_status_check constraint (' + label + '). Run the indent status migration SQL in Supabase.');
+        return res;
+    }
+    sbCheck(res, label);
+    return res;
+}
+
+async function supabaseSync(action, state, postState) {
     try {
         switch (action.type) {
             case 'CREATE_INDENT': {
@@ -1692,7 +1739,9 @@ async function supabaseSync(action, state) {
                 if (updates.paymentTerms !== undefined) dbUpdates.payment_terms = updates.paymentTerms;
                 if (updates.deliveryAddress !== undefined) dbUpdates.delivery_address = updates.deliveryAddress;
                 if (updates.notes !== undefined) dbUpdates.notes = updates.notes;
-                if (updates.officeId !== undefined) dbUpdates.office_id = updates.officeId;
+                if (updates.officeId !== undefined) dbUpdates.office_id = updates.officeId || null;
+                if (updates.totalAmount !== undefined) dbUpdates.total_amount = updates.totalAmount || 0;
+                if (updates.remarks !== undefined) dbUpdates.remarks = updates.remarks;
                 dbUpdates.updated_at = new Date().toISOString();
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
@@ -1722,6 +1771,7 @@ async function supabaseSync(action, state) {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'pending_approval', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'submit PO');
+                await syncIndentStatusForPO(action.payload.poId, 'pending_md_po_approval', 'indent status after PO submit');
                 break;
             }
 
@@ -1729,6 +1779,7 @@ async function supabaseSync(action, state) {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'approved', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'approve PO');
+                await syncIndentStatusForPO(action.payload.poId, 'po_approved', 'indent status after PO approval');
                 break;
             }
 
@@ -1736,6 +1787,7 @@ async function supabaseSync(action, state) {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'draft', remarks: 'MD Rejected: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'MD reject PO');
+                await syncIndentStatusForPO(action.payload.poId, 'po_draft', 'indent status after MD PO rejection');
                 break;
             }
 
@@ -1743,6 +1795,7 @@ async function supabaseSync(action, state) {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'approved', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'approve PO');
+                await syncIndentStatusForPO(action.payload.poId, 'po_approved', 'indent status after PO approval');
                 break;
             }
 
@@ -1750,6 +1803,7 @@ async function supabaseSync(action, state) {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'draft', remarks: 'Rejected: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'reject PO');
+                await syncIndentStatusForPO(action.payload.poId, 'po_draft', 'indent status after PO rejection');
                 break;
             }
 
@@ -1757,6 +1811,7 @@ async function supabaseSync(action, state) {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'issued', issued_at: new Date().toISOString(), updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'issue PO');
+                await syncIndentStatusForPO(action.payload.poId, 'po_issued', 'indent status after PO issue');
                 break;
             }
 
@@ -1764,14 +1819,20 @@ async function supabaseSync(action, state) {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'issued', issued_at: new Date().toISOString(), updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'finalize PO');
+                await syncIndentStatusForPO(action.payload.poId, 'po_issued', 'indent status after PO finalize');
                 break;
             }
 
             case 'RECEIVE_AGAINST_PO': {
                 var receipts = action.payload.receipts || [];
-                // Find the GRN that was just created by the reducer (state is post-reducer)
-                var _rap_grns = state.grns || [];
-                var _rap_latestGrn = _rap_grns[_rap_grns.length - 1];
+                // Find the GRN the reducer just created: present in the post-reducer state
+                // for this PO but not in the pre-reducer state.
+                var _rap_preIds = {};
+                (state.grns || []).forEach(function(g) { _rap_preIds[g.id] = true; });
+                var _rap_newGrns = ((postState || {}).grns || []).filter(function(g) {
+                    return g.poId === action.payload.poId && !_rap_preIds[g.id];
+                });
+                var _rap_latestGrn = _rap_newGrns[_rap_newGrns.length - 1];
                 var grnId = _rap_latestGrn ? _rap_latestGrn.id : genUUID();
                 var grnNumber = _rap_latestGrn ? _rap_latestGrn.grnNumber : 'GRN-' + new Date().getFullYear() + '-' + Date.now().toString(36).toUpperCase();
 
@@ -1816,11 +1877,17 @@ async function supabaseSync(action, state) {
                     }
                 }
 
-                // Update PO status if needed (state is post-reducer, has updated status)
+                // Derive the PO status from the received quantities now stored in the DB
                 var _rap_po = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
-                if (_rap_po && (_rap_po.status === 'partially_fulfilled' || _rap_po.status === 'fulfilled')) {
+                var _rap_liRes = sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items')
+                    .select('quantity, received_qty').eq('po_id', action.payload.poId), 'read PO line items after receipt');
+                var _rap_lis = (_rap_liRes && _rap_liRes.data) || [];
+                var _rap_any = _rap_lis.some(function(li) { return (Number(li.received_qty) || 0) > 0; });
+                var _rap_all = _rap_lis.length > 0 && _rap_lis.every(function(li) { return (Number(li.received_qty) || 0) >= (Number(li.quantity) || 0); });
+                var _rap_status = _rap_all ? 'fulfilled' : (_rap_any ? 'partially_fulfilled' : null);
+                if (_rap_status) {
                     sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                        .update({ status: _rap_po.status, updated_at: new Date().toISOString() })
+                        .update({ status: _rap_status, updated_at: new Date().toISOString() })
                         .eq('id', action.payload.poId), 'update PO status after receipt');
                 }
 
@@ -2204,6 +2271,7 @@ async function supabaseSync(action, state) {
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
                     .update({ status: 'pending_approval', updated_at: new Date().toISOString() })
                     .eq('id', action.payload.poId), 'request MD PO approval');
+                await syncIndentStatusForPO(action.payload.poId, 'pending_md_po_approval', 'indent status after MD approval request', action.payload.indentId);
                 break;
             }
 
@@ -2231,9 +2299,13 @@ async function supabaseSync(action, state) {
             }
 
             case 'AMEND_PO': {
+                var _amd = { status: 'draft', remarks: 'Amended', updated_at: new Date().toISOString() };
+                // Persist the version bump the reducer applied (state is pre-reducer here)
+                var _amdPo = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
+                if (_amdPo) _amd.version = (_amdPo.version || 1) + 1;
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'draft', remarks: 'Amended', updated_at: new Date().toISOString() })
-                    .eq('id', action.payload.poId), 'amend PO');
+                    .update(_amd).eq('id', action.payload.poId), 'amend PO');
+                await syncIndentStatusForPO(action.payload.poId, 'po_draft', 'indent status after PO amendment');
                 break;
             }
 
@@ -2415,14 +2487,17 @@ function appReducer(state, action) {
             return Object.assign({}, state, { currentUserId: loginUser ? loginUser.id : null, currentUser: loginUser || null });
         }
 
-        case 'LOAD_DATA':
-            return Object.assign({}, state, action.payload, { isLoading: false, isAuthenticated: true });
+        case 'LOAD_DATA': {
+            var _ld = Object.assign({}, state, action.payload, { isLoading: false, isAuthenticated: true });
+            _ld.purchaseOrders = hydratePOs(_ld.purchaseOrders, _ld.vendors);
+            return _ld;
+        }
 
         case 'REFRESH_INDENTS':
             return Object.assign({}, state, { indents: action.payload });
 
         case 'REFRESH_POS':
-            return Object.assign({}, state, { purchaseOrders: action.payload });
+            return Object.assign({}, state, { purchaseOrders: hydratePOs(action.payload, state.vendors) });
 
         case 'SET_LOADING':
             return Object.assign({}, state, { isLoading: action.payload });
@@ -11594,9 +11669,10 @@ function App() {
     var stateRef = useRef(state);
 
     // Keep stateRef current for async sync functions
-    React.useEffect(function() {
-        stateRef.current = state;
-    }, [state]);
+    stateRef.current = state;
+    // DB syncs run one at a time, in dispatch order, so e.g. a PO insert always
+    // lands before the status update that follows it.
+    var syncQueueRef = useRef(Promise.resolve());
 
     var dispatch = useCallback(function(action) {
         var entry = { ts: new Date().toISOString(), type: action.type, userId: stateRef.current.currentUserId };
@@ -11611,8 +11687,15 @@ function App() {
             throw e;
         }
 
-        // Sync to Supabase in the background (fire-and-forget)
-        supabaseSync(action, stateRef.current).catch(function(err) {
+        // Sync to Supabase in the background, queued behind earlier syncs.
+        // preState is the state before this action; the short wait lets React
+        // re-render so stateRef.current is the state after it.
+        var preState = stateRef.current;
+        syncQueueRef.current = syncQueueRef.current.then(function() {
+            return new Promise(function(resolve) { setTimeout(resolve, 25); });
+        }).then(function() {
+            return supabaseSync(action, preState, stateRef.current);
+        }).catch(function(err) {
             console.error('[NC_MIS] Sync failed for ' + action.type + ':', err);
             rawDispatch({ type: 'SHOW_TOAST', payload: { message: 'Sync error: ' + err.message, type: 'error' } });
         });
@@ -11620,37 +11703,48 @@ function App() {
 
     // Auth state listener
     React.useEffect(function() {
+        // Guards against loading twice when both INITIAL_SESSION and SIGNED_IN fire
+        var sessionLoadStarted = false;
         var subscription = supabaseClient.auth.onAuthStateChange(function(event, session) {
-            if (event === 'SIGNED_IN' && session && session.user) {
+            // On a page refresh Supabase may emit only INITIAL_SESSION (SIGNED_IN can fire
+            // before this listener is registered), so both events must start the data load.
+            if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session && session.user) {
                 // User signed in - load data if not already loaded
-                if (!stateRef.current.isAuthenticated) {
+                if (!stateRef.current.isAuthenticated && !sessionLoadStarted) {
+                    sessionLoadStarted = true;
                     rawDispatch({ type: 'SET_LOADING', payload: true });
-                    supabaseClient.schema('core').from('profiles').select('*').eq('id', session.user.id).single()
-                        .then(function(profileRes) {
-                            if (profileRes.error || !profileRes.data) {
-                                console.error('[NC_MIS] Profile not found for auth user');
-                                rawDispatch({ type: 'SET_LOADING', payload: false });
-                                return;
-                            }
-                            var profile = transformProfile(profileRes.data);
-                            loadAllData(session.user.id).then(function(data) {
-                                rawDispatch({ type: 'LOAD_DATA', payload: data });
-                                rawDispatch({ type: 'LOGIN_AS_USER', payload: profile });
-                                var roleRoutes = {
-                                    admin: '#users', site_engineer: '#my-indents', storekeeper: '#store-pending',
-                                    project_manager: '#dashboard', procurement_manager: '#procurement-dashboard',
-                                    procurement_clerk: '#clerk-assigned', md: '#dashboard',
-                                };
-                                if (window.location.hash === '#login' || window.location.hash === '' || !window.location.hash) {
-                                    window.location.hash = roleRoutes[profile.role] || '#dashboard';
+                    // Deferred: Supabase calls made directly inside this callback can deadlock
+                    setTimeout(function() {
+                        supabaseClient.schema('core').from('profiles').select('*').eq('id', session.user.id).single()
+                            .then(function(profileRes) {
+                                if (profileRes.error || !profileRes.data) {
+                                    console.error('[NC_MIS] Profile not found for auth user');
+                                    sessionLoadStarted = false;
+                                    rawDispatch({ type: 'SET_LOADING', payload: false });
+                                    return;
                                 }
-                            }).catch(function(err) {
-                                console.error('[NC_MIS] Data load error in auth listener:', err);
-                                rawDispatch({ type: 'SET_LOADING', payload: false });
+                                var profile = transformProfile(profileRes.data);
+                                loadAllData(session.user.id).then(function(data) {
+                                    rawDispatch({ type: 'LOAD_DATA', payload: data });
+                                    rawDispatch({ type: 'LOGIN_AS_USER', payload: profile });
+                                    var roleRoutes = {
+                                        admin: '#users', site_engineer: '#my-indents', storekeeper: '#store-pending',
+                                        project_manager: '#dashboard', procurement_manager: '#procurement-dashboard',
+                                        procurement_clerk: '#clerk-assigned', md: '#dashboard',
+                                    };
+                                    if (window.location.hash === '#login' || window.location.hash === '' || !window.location.hash) {
+                                        window.location.hash = roleRoutes[profile.role] || '#dashboard';
+                                    }
+                                }).catch(function(err) {
+                                    console.error('[NC_MIS] Data load error in auth listener:', err);
+                                    sessionLoadStarted = false;
+                                    rawDispatch({ type: 'SET_LOADING', payload: false });
+                                });
                             });
-                        });
+                    }, 0);
                 }
             } else if (event === 'SIGNED_OUT') {
+                sessionLoadStarted = false;
                 rawDispatch({ type: 'LOGOUT' });
                 rawDispatch({ type: 'SET_LOADING', payload: false });
                 rawDispatch({ type: 'SET_AUTHENTICATED', payload: false });
