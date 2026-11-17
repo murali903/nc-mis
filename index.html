@@ -1781,13 +1781,17 @@ async function supabaseSync(action, state) {
 
             case 'MARK_DISPATCHED': {
                 var indentId = typeof action.payload === 'string' ? action.payload : action.payload.indentId;
+                var dispNote = '';
+                if (typeof action.payload === 'object') {
+                    dispNote = 'Vendor: ' + (action.payload.vendorName || '') + ' | ETA: ' + (action.payload.expectedDelivery || '') + ' | Ref: ' + (action.payload.docReference || '') + ' | Notes: ' + (action.payload.notes || '');
+                }
                 await safeIndentUpdate(indentId, { status: 'dispatched' }, 'mark dispatched');
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: indentId,
                     action: 'Dispatched',
                     user_id: state.currentUserId,
-                    note: '',
+                    note: dispNote,
                 }), 'dispatch activity');
                 break;
             }
@@ -2161,7 +2165,7 @@ async function supabaseSync(action, state) {
 
             case 'AMEND_PO': {
                 await supabaseClient.schema('indent_flow').from('purchase_orders')
-                    .update({ status: 'amendment_pending', amended_at: new Date().toISOString(), amended_by: state.currentUserId })
+                    .update({ status: 'draft', amended_at: new Date().toISOString(), amended_by: state.currentUserId })
                     .eq('id', action.payload.poId);
                 break;
             }
@@ -2347,6 +2351,12 @@ function appReducer(state, action) {
         case 'LOAD_DATA':
             return Object.assign({}, state, action.payload, { isLoading: false, isAuthenticated: true });
 
+        case 'REFRESH_INDENTS':
+            return Object.assign({}, state, { indents: action.payload });
+
+        case 'REFRESH_POS':
+            return Object.assign({}, state, { purchaseOrders: action.payload });
+
         case 'SET_LOADING':
             return Object.assign({}, state, { isLoading: action.payload });
 
@@ -2515,7 +2525,12 @@ function appReducer(state, action) {
                         ? {
                             ...ind,
                             status: 'dispatched',
-                            activityLog: addActivityLog(ind, 'Dispatched', dispatchedBy, '')
+                            dispatchVendor: (typeof action.payload === 'object' && action.payload.vendorName) || '',
+                            dispatchETA: (typeof action.payload === 'object' && action.payload.expectedDelivery) || '',
+                            dispatchDocRef: (typeof action.payload === 'object' && action.payload.docReference) || '',
+                            dispatchNotes: (typeof action.payload === 'object' && action.payload.notes) || '',
+                            activityLog: addActivityLog(ind, 'Dispatched', dispatchedBy,
+                                typeof action.payload === 'object' ? ('Vendor: ' + (action.payload.vendorName || '') + ', ETA: ' + (action.payload.expectedDelivery || '')) : '')
                         }
                         : ind
                 ),
@@ -3390,17 +3405,66 @@ function appReducer(state, action) {
             };
         }
 
-        case 'AMEND_PO': {
-            var _amp = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
-            if (!_amp) return state;
+        case 'REQUEST_MD_PO_APPROVAL': {
+            var _rmpa_po = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
+            if (!_rmpa_po) return state;
             return {
                 ...state,
                 purchaseOrders: state.purchaseOrders.map(function(po) {
-                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'amendment_pending', amendedAt: new Date().toISOString(), amendedBy: state.currentUserId }) : po;
+                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'pending_md_approval', submittedAt: new Date().toISOString(), submittedBy: state.currentUserId }) : po;
+                }),
+                indents: state.indents.map(function(ind) {
+                    return ind.linkedPO === action.payload.poId || ind.id === action.payload.indentId
+                        ? Object.assign({}, ind, { status: 'pending_md_po_approval', activityLog: addActivityLog(ind, 'PO Submitted for MD Approval', state.currentUserId, 'PO ' + action.payload.poId) })
+                        : ind;
+                }),
+            };
+        }
+
+        case 'MD_APPROVE_PO': {
+            var _mdapo = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
+            if (!_mdapo || _mdapo.status !== 'pending_md_approval') return state;
+            return {
+                ...state,
+                purchaseOrders: state.purchaseOrders.map(function(po) {
+                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'approved', approvedAt: new Date().toISOString(), approvedBy: state.currentUserId }) : po;
                 }),
                 indents: state.indents.map(function(ind) {
                     return ind.linkedPO === action.payload.poId
-                        ? Object.assign({}, ind, { activityLog: addActivityLog(ind, 'PO Amendment Requested', state.currentUserId, 'PO ' + action.payload.poId + ' needs re-approval') })
+                        ? Object.assign({}, ind, { status: 'po_approved', activityLog: addActivityLog(ind, 'PO Approved by MD', state.currentUserId, 'PO ' + action.payload.poId + ' approved') })
+                        : ind;
+                }),
+            };
+        }
+
+        case 'MD_REJECT_PO': {
+            var _mdrpo = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
+            if (!_mdrpo) return state;
+            return {
+                ...state,
+                purchaseOrders: state.purchaseOrders.map(function(po) {
+                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'draft', rejectedAt: new Date().toISOString(), rejectedBy: state.currentUserId, rejectReason: action.payload.reason || '' }) : po;
+                }),
+                indents: state.indents.map(function(ind) {
+                    return ind.linkedPO === action.payload.poId
+                        ? Object.assign({}, ind, { status: 'po_draft', activityLog: addActivityLog(ind, 'PO Rejected by MD', state.currentUserId, action.payload.reason || '') })
+                        : ind;
+                }),
+            };
+        }
+
+        case 'AMEND_PO': {
+            var _amp = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
+            if (!_amp) return state;
+            var _ampVersion = (_amp.version || 1) + 1;
+            return {
+                ...state,
+                purchaseOrders: state.purchaseOrders.map(function(po) {
+                    return po.id === action.payload.poId ? Object.assign({}, po, { status: 'draft', amendedAt: new Date().toISOString(), amendedBy: state.currentUserId, isAmended: true, version: _ampVersion, previousStatus: 'issued' }) : po;
+                }),
+                indents: state.indents.map(function(ind) {
+                    return ind.linkedPO === action.payload.poId
+                        ? Object.assign({}, ind, { status: 'po_draft', activityLog: addActivityLog(ind, 'PO Amendment — Reverted to Draft', state.currentUserId, 'PO ' + action.payload.poId + ' v' + _ampVersion + ' opened for editing') })
                         : ind;
                 }),
             };
@@ -5479,7 +5543,7 @@ function PODetailScreen(_ref) {
           dispatch({ type: 'AMEND_PO', payload: { poId: po.id } });
           dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO amendment requested', type: 'info' } });
         }
-      }, 'Amend PO'),
+      }, 'Amend PO (Revert to Draft)'),
       (po.status === 'partially_fulfilled') && React.createElement('button', {
         className: 'btn btn-secondary',
         onClick: function() {
@@ -6373,7 +6437,7 @@ function AssignmentsScreen() {
 function MyIndentsScreen() {
   const [state] = useContext(AppContext);
   const user = state.currentUser;
-  const myIndents = state.indents.filter(i => i.createdBy === user.id);
+  const myIndents = state.indents.filter(i => i.createdBy === user.id).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 
   return React.createElement('div', { style: { padding: 24 } },
     React.createElement('div', {
@@ -6493,18 +6557,79 @@ function CreateIndentScreen() {
     setItems(updated);
   };
 
+  var isSubmittingIndent = React.useRef(false);
   const handleSubmit = (status) => {
-    if (!siteId) return;
+    // Prevent double submission
+    if (isSubmittingIndent.current) return;
+
+    // Site is required
+    if (!siteId) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please select a site', type: 'error' } });
+      return;
+    }
+
+    // Required date validation
     if (requiredDate && requiredDate < new Date().toISOString().split('T')[0]) {
       dispatch({ type: 'SHOW_TOAST', payload: { message: 'Required date cannot be in the past', type: 'error' } });
       return;
     }
-    if (items.some(function(i) { return i.qty && (parseFloat(i.qty) <= 0 || parseFloat(i.qty) > 999999); })) {
-      dispatch({ type: 'SHOW_TOAST', payload: { message: 'All quantities must be between 1 and 999,999', type: 'error' } });
+
+    // For "submit for approval", required date is mandatory
+    if (status === 'pending_approval' && !requiredDate) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Required date is mandatory when submitting for approval', type: 'error' } });
       return;
     }
+
+    // Check each item individually for quality issues
+    var itemErrors = [];
+    items.forEach(function(i, idx) {
+      var num = idx + 1;
+      if ((i.name || i.description) && (!i.qty || parseFloat(i.qty) <= 0)) {
+        itemErrors.push('Item ' + num + ' (' + (i.name || i.description) + '): quantity is required');
+      }
+      if (i.qty && parseFloat(i.qty) > 0 && !i.name && !i.description) {
+        itemErrors.push('Item ' + num + ': material name is required');
+      }
+      if (i.qty && (parseFloat(i.qty) <= 0 || parseFloat(i.qty) > 999999)) {
+        itemErrors.push('Item ' + num + ': quantity must be between 1 and 999,999');
+      }
+      if ((i.name || i.description) && i.qty && parseFloat(i.qty) > 0 && !i.unit) {
+        itemErrors.push('Item ' + num + ' (' + (i.name || i.description) + '): please select a unit');
+      }
+    });
+    if (itemErrors.length > 0) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: itemErrors[0], type: 'error' } });
+      return;
+    }
+
+    // Filter to fully valid items
     const validItems = items.filter(i => (i.name || i.description) && i.qty && parseFloat(i.qty) > 0 && parseFloat(i.qty) <= 999999);
-    if (validItems.length === 0) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please add at least one line item with valid quantity', type: 'error' } }); return; }
+    if (validItems.length === 0) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please add at least one line item with material name and valid quantity', type: 'error' } });
+      return;
+    }
+
+    // Mandatory field validation for all valid items
+    var invalidItems = validItems.filter(function(li) {
+        if (li.isBoqItem && !li.boqId) return true;
+        if (!li.isBoqItem && (!li.description || !li.description.trim()) && (!li.name || !li.name.trim())) return true;
+        if (!li.unit) return true;
+        if (!li.qty || parseFloat(li.qty) <= 0) return true;
+        return false;
+    });
+    if (invalidItems.length > 0) {
+        dispatch({ type: 'SHOW_TOAST', payload: { message: 'All items must have Description, Unit, and Qty > 0', type: 'error' } });
+        return;
+    }
+
+    // Warn if some items were dropped (partially filled items)
+    var totalItems = items.filter(function(i) { return i.name || i.description || i.qty; }).length;
+    if (totalItems > validItems.length) {
+      var droppedCount = totalItems - validItems.length;
+      dispatch({ type: 'SHOW_TOAST', payload: { message: droppedCount + ' incomplete item(s) were removed. Only ' + validItems.length + ' valid item(s) will be saved.', type: 'warning' } });
+    }
+
+    isSubmittingIndent.current = true;
 
     const indent = {
       id: genUUID(),
@@ -6522,7 +6647,7 @@ function CreateIndentScreen() {
         name: i.name || i.description,
         description: i.description || i.name,
         qty: parseFloat(i.qty),
-        unit: i.unit,
+        unit: i.unit || '',
         hsn: i.hsn || '',
         remarks: i.remarks,
         received: 0,
@@ -6546,6 +6671,9 @@ function CreateIndentScreen() {
     }
 
     window.location.hash = user.role === 'project_manager' ? '#all-indents' : '#my-indents';
+
+    // Reset submit lock after a delay (allows navigation to complete)
+    setTimeout(function() { isSubmittingIndent.current = false; }, 2000);
   };
 
   const inputStyle = {
@@ -6688,10 +6816,31 @@ function CreateIndentScreen() {
             ),
             React.createElement('div', null,
               idx === 0 && React.createElement('label', { style: labelStyle }, 'Unit'),
-              React.createElement('input', {
-                value: item.unit, onChange: function(e) { updateItem(idx, 'unit', e.target.value); },
-                placeholder: 'Unit', style: inputStyle,
-              })
+              React.createElement('select', {
+                value: item.unit || '', onChange: function(e) { updateItem(idx, 'unit', e.target.value); },
+                style: inputStyle,
+              },
+                React.createElement('option', { value: '' }, 'Select unit...'),
+                React.createElement('option', { value: 'Bags' }, 'Bags'),
+                React.createElement('option', { value: 'MT' }, 'MT (Metric Ton)'),
+                React.createElement('option', { value: 'Kg' }, 'Kg'),
+                React.createElement('option', { value: 'Cu.M' }, 'Cu.M (Cubic Meter)'),
+                React.createElement('option', { value: 'Sqm' }, 'Sqm (Square Meter)'),
+                React.createElement('option', { value: 'Rmt' }, 'Rmt (Running Meter)'),
+                React.createElement('option', { value: 'Nos' }, 'Nos (Numbers)'),
+                React.createElement('option', { value: 'Ltrs' }, 'Ltrs (Litres)'),
+                React.createElement('option', { value: 'Bag' }, 'Bag'),
+                React.createElement('option', { value: 'Set' }, 'Set'),
+                React.createElement('option', { value: 'Pair' }, 'Pair'),
+                React.createElement('option', { value: 'Box' }, 'Box'),
+                React.createElement('option', { value: 'Roll' }, 'Roll'),
+                React.createElement('option', { value: 'Bundle' }, 'Bundle'),
+                React.createElement('option', { value: 'Feet' }, 'Feet'),
+                React.createElement('option', { value: 'Inch' }, 'Inch'),
+                React.createElement('option', { value: 'Trip' }, 'Trip'),
+                React.createElement('option', { value: 'Load' }, 'Load'),
+                React.createElement('option', { value: 'LS' }, 'LS (Lump Sum)')
+              )
             ),
             React.createElement('div', null,
               idx === 0 && React.createElement('label', { style: labelStyle }, 'Remarks'),
@@ -7229,10 +7378,11 @@ function DashboardScreen() {
   // MD Dashboard
   if (role === 'md') {
     const allIndents = state.indents;
+    const pendingPOs = (state.purchaseOrders || []).filter(po => po.status === 'pending_md_approval');
     const stats = [
       { label: 'Total Indents', value: allIndents.length, color: '#6366f1', bg: '#eef2ff', route: '#all-indents' },
       { label: 'Submitted', value: allIndents.filter(i => i.status === 'pending_approval').length, color: '#f59e0b', bg: '#fef9c3', route: '#approvals' },
-      { label: 'Approved', value: allIndents.filter(i => i.status === 'approved').length, color: '#16a34a', bg: '#dcfce7', route: '#all-indents' },
+      { label: 'POs Pending', value: pendingPOs.length, color: '#dc2626', bg: '#fee2e2', route: '#md-po-approvals' },
       { label: 'Completed', value: allIndents.filter(i => i.status === 'completed').length, color: '#059669', bg: '#d1fae5', route: '#all-indents' },
     ];
 
@@ -7886,7 +8036,7 @@ function EscalatedScreen() {
         if (i.status !== 'pending_approval') return false;
         const hoursPending = getHoursPending(i.createdAt);
         return hoursPending > 36;
-    });
+    }).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
     const escalatedIndents = applyIndentFilters(allEscalated, filters);
 
     return (
@@ -7948,7 +8098,7 @@ function ProcurementApprovedScreen() {
     const currentUser = state.users.find(u => u.id === state.currentUserId);
     const isProcurementManager = currentUser && currentUser.role === 'procurement_manager';
 
-    const allApproved = state.indents.filter(i => i.status === 'approved');
+    const allApproved = state.indents.filter(i => i.status === 'approved').sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
     const approvedIndents = applyIndentFilters(allApproved, filters);
     const clerkUsers = state.users.filter(u => u.role === 'procurement_clerk');
 
@@ -7968,8 +8118,48 @@ function ProcurementApprovedScreen() {
         dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent self-assigned', type: 'success' } });
     };
 
+    const [escalateIndentId, setEscalateIndentId] = useState(null);
+    const [escalateRemarks, setEscalateRemarks] = useState('');
+
+    const handleEscalateToMD = () => {
+        if (!escalateRemarks.trim()) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide remarks for the escalation', type: 'error' } });
+            return;
+        }
+        dispatch({ type: 'ESCALATE_TO_MD', payload: { indentId: escalateIndentId, remarks: escalateRemarks, escalatedBy: state.currentUserId } });
+        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent escalated to MD', type: 'success' } });
+        setEscalateIndentId(null);
+        setEscalateRemarks('');
+    };
+
+    const handleDirectFulfill = (indentId) => {
+        dispatch({ type: 'MARK_DISPATCHED', payload: { indentId, dispatchVendor: 'Direct Fulfillment', dispatchETA: new Date().toISOString().slice(0, 10), dispatchNotes: 'Direct fulfillment — no PO required' } });
+        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent marked as directly fulfilled (no PO)', type: 'success' } });
+    };
+
     return (
         React.createElement('div', null,
+            escalateIndentId ? React.createElement('div', {
+                style: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }
+            },
+                React.createElement('div', {
+                    style: { background: '#fff', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '90vw', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }
+                },
+                    React.createElement('h3', { style: { marginBottom: '16px', fontSize: '16px' } }, 'Escalate to MD'),
+                    React.createElement('p', { style: { fontSize: '13px', color: '#64748b', marginBottom: '12px' } }, 'Explain why this indent needs MD attention:'),
+                    React.createElement('textarea', {
+                        className: 'form-textarea',
+                        value: escalateRemarks,
+                        onChange: (e) => setEscalateRemarks(e.target.value),
+                        placeholder: 'Remarks for MD...',
+                        style: { minHeight: '80px', marginBottom: '16px', width: '100%' }
+                    }),
+                    React.createElement('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
+                        React.createElement('button', { className: 'btn btn-secondary', onClick: () => { setEscalateIndentId(null); setEscalateRemarks(''); } }, 'Cancel'),
+                        React.createElement('button', { className: 'btn btn-primary', onClick: handleEscalateToMD }, 'Escalate')
+                    )
+                )
+            ) : null,
             React.createElement(IndentFilterBar, { sites: state.sites, users: state.users, filters, setFilters, totalCount: allApproved.length, filteredCount: approvedIndents.length }),
             React.createElement('div', { className: 'card' },
                 React.createElement('div', { className: 'card-header' },
@@ -8024,7 +8214,17 @@ function ProcurementApprovedScreen() {
                                                 className: 'btn btn-sm btn-secondary',
                                                 onClick: () => handleSelfAssign(indent.id),
                                                 style: { whiteSpace: 'nowrap' }
-                                            }, 'Self Assign')
+                                            }, 'Self Assign'),
+                                            React.createElement('button', {
+                                                className: 'btn btn-sm',
+                                                style: { backgroundColor: '#f59e0b', color: 'white', fontSize: '12px', whiteSpace: 'nowrap' },
+                                                onClick: () => setEscalateIndentId(indent.id)
+                                            }, 'Escalate to MD'),
+                                            React.createElement('button', {
+                                                className: 'btn btn-sm',
+                                                style: { backgroundColor: '#10b981', color: 'white', fontSize: '12px', whiteSpace: 'nowrap' },
+                                                onClick: () => handleDirectFulfill(indent.id)
+                                            }, 'Direct Fulfill')
                                         )
                                     )
                                 )
@@ -8054,9 +8254,36 @@ function ProcurementProgressScreen() {
         return assignee && assignee.role === 'procurement_clerk' && i.assignedTo !== state.currentUserId;
     });
 
+    const [dispatchModal, setDispatchModal] = useState(null);
+    const [dispatchVendor, setDispatchVendor] = useState('');
+    const [dispatchETA, setDispatchETA] = useState('');
+    const [dispatchNotes, setDispatchNotes] = useState('');
+    const [dispatchDocRef, setDispatchDocRef] = useState('');
+
     const handleMarkDispatched = (indentId) => {
-        dispatch({ type: 'MARK_DISPATCHED', payload: indentId });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent marked as dispatched', type: 'success' } });
+        setDispatchModal(indentId);
+        setDispatchVendor('');
+        setDispatchETA('');
+        setDispatchNotes('');
+        setDispatchDocRef('');
+    };
+
+    const handleConfirmDispatch = () => {
+        if (!dispatchVendor.trim()) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Vendor name is required for dispatch', type: 'error' } });
+            return;
+        }
+        if (!dispatchETA) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Expected delivery date is required', type: 'error' } });
+            return;
+        }
+        if (!dispatchNotes.trim() && !dispatchDocRef.trim()) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide dispatch notes or document reference', type: 'error' } });
+            return;
+        }
+        dispatch({ type: 'MARK_DISPATCHED', payload: { indentId: dispatchModal, vendorName: dispatchVendor, expectedDelivery: dispatchETA, notes: dispatchNotes, docReference: dispatchDocRef } });
+        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent dispatched with logistics details', type: 'success' } });
+        setDispatchModal(null);
     };
 
     const renderTab = (label, tabKey) => {
@@ -8135,7 +8362,37 @@ function ProcurementProgressScreen() {
             renderTab('Clerk Work', 'clerk-work')
         ),
         activeTab === 'my-work' ? renderIndentTable(myWorkIndents, true, false) : null,
-        activeTab === 'clerk-work' ? renderIndentTable(clerkWorkIndents, false, true) : null
+        activeTab === 'clerk-work' ? renderIndentTable(clerkWorkIndents, false, true) : null,
+        dispatchModal ? React.createElement('div', {
+            style: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }
+        },
+            React.createElement('div', { style: { background: '#fff', borderRadius: '12px', padding: '24px', width: '500px', maxWidth: '90vw' } },
+                React.createElement('h3', { style: { marginBottom: '16px', fontSize: '18px', fontWeight: '700' } }, 'Dispatch Details'),
+                React.createElement('p', { style: { fontSize: '13px', color: '#64748b', marginBottom: '16px' } }, 'Fill in logistics details before dispatching.'),
+                React.createElement('div', { style: { display: 'grid', gap: '12px' } },
+                    React.createElement('div', null,
+                        React.createElement('label', { className: 'form-label' }, 'Vendor / Supplier Name *'),
+                        React.createElement('input', { type: 'text', className: 'form-input', value: dispatchVendor, onChange: (e) => setDispatchVendor(e.target.value), placeholder: 'Enter vendor name' })
+                    ),
+                    React.createElement('div', null,
+                        React.createElement('label', { className: 'form-label' }, 'Expected Delivery Date *'),
+                        React.createElement('input', { type: 'date', className: 'form-input', value: dispatchETA, onChange: (e) => setDispatchETA(e.target.value), min: new Date().toISOString().split('T')[0] })
+                    ),
+                    React.createElement('div', null,
+                        React.createElement('label', { className: 'form-label' }, 'Document / Invoice Reference'),
+                        React.createElement('input', { type: 'text', className: 'form-input', value: dispatchDocRef, onChange: (e) => setDispatchDocRef(e.target.value), placeholder: 'Invoice no., DC no., etc.' })
+                    ),
+                    React.createElement('div', null,
+                        React.createElement('label', { className: 'form-label' }, 'Dispatch Notes *'),
+                        React.createElement('textarea', { className: 'form-textarea', value: dispatchNotes, onChange: (e) => setDispatchNotes(e.target.value), placeholder: 'Transport details, quantity dispatched, etc.', style: { minHeight: '80px' } })
+                    )
+                ),
+                React.createElement('div', { style: { marginTop: '16px', display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
+                    React.createElement('button', { className: 'btn btn-secondary', onClick: () => setDispatchModal(null) }, 'Cancel'),
+                    React.createElement('button', { className: 'btn btn-success', onClick: handleConfirmDispatch }, 'Confirm Dispatch')
+                )
+            )
+        ) : null
     );
 }
 
@@ -8156,9 +8413,36 @@ function ClerkAssignedScreen() {
         return Math.floor((now - created) / (1000 * 60 * 60 * 24));
     };
 
+    const [clkDispatchModal, setClkDispatchModal] = useState(null);
+    const [clkDispatchVendor, setClkDispatchVendor] = useState('');
+    const [clkDispatchETA, setClkDispatchETA] = useState('');
+    const [clkDispatchNotes, setClkDispatchNotes] = useState('');
+    const [clkDispatchDocRef, setClkDispatchDocRef] = useState('');
+
     const handleMarkDispatched = (indentId) => {
-        dispatch({ type: 'MARK_DISPATCHED', payload: indentId });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent marked as dispatched', type: 'success' } });
+        setClkDispatchModal(indentId);
+        setClkDispatchVendor('');
+        setClkDispatchETA('');
+        setClkDispatchNotes('');
+        setClkDispatchDocRef('');
+    };
+
+    const handleClkConfirmDispatch = () => {
+        if (!clkDispatchVendor.trim()) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Vendor name is required for dispatch', type: 'error' } });
+            return;
+        }
+        if (!clkDispatchETA) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Expected delivery date is required', type: 'error' } });
+            return;
+        }
+        if (!clkDispatchNotes.trim() && !clkDispatchDocRef.trim()) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide dispatch notes or document reference', type: 'error' } });
+            return;
+        }
+        dispatch({ type: 'MARK_DISPATCHED', payload: { indentId: clkDispatchModal, vendorName: clkDispatchVendor, expectedDelivery: clkDispatchETA, notes: clkDispatchNotes, docReference: clkDispatchDocRef } });
+        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent dispatched with logistics details', type: 'success' } });
+        setClkDispatchModal(null);
     };
 
     return React.createElement('div', { className: 'card' },
@@ -8207,7 +8491,37 @@ function ClerkAssignedScreen() {
                         )
                     )
             )
-        )
+        ),
+        clkDispatchModal ? React.createElement('div', {
+            style: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }
+        },
+            React.createElement('div', { style: { background: '#fff', borderRadius: '12px', padding: '24px', width: '500px', maxWidth: '90vw' } },
+                React.createElement('h3', { style: { marginBottom: '16px', fontSize: '18px', fontWeight: '700' } }, 'Dispatch Details'),
+                React.createElement('p', { style: { fontSize: '13px', color: '#64748b', marginBottom: '16px' } }, 'Fill in logistics details before dispatching.'),
+                React.createElement('div', { style: { display: 'grid', gap: '12px' } },
+                    React.createElement('div', null,
+                        React.createElement('label', { className: 'form-label' }, 'Vendor / Supplier Name *'),
+                        React.createElement('input', { type: 'text', className: 'form-input', value: clkDispatchVendor, onChange: (e) => setClkDispatchVendor(e.target.value), placeholder: 'Enter vendor name' })
+                    ),
+                    React.createElement('div', null,
+                        React.createElement('label', { className: 'form-label' }, 'Expected Delivery Date *'),
+                        React.createElement('input', { type: 'date', className: 'form-input', value: clkDispatchETA, onChange: (e) => setClkDispatchETA(e.target.value), min: new Date().toISOString().split('T')[0] })
+                    ),
+                    React.createElement('div', null,
+                        React.createElement('label', { className: 'form-label' }, 'Document / Invoice Reference'),
+                        React.createElement('input', { type: 'text', className: 'form-input', value: clkDispatchDocRef, onChange: (e) => setClkDispatchDocRef(e.target.value), placeholder: 'Invoice no., DC no., etc.' })
+                    ),
+                    React.createElement('div', null,
+                        React.createElement('label', { className: 'form-label' }, 'Dispatch Notes *'),
+                        React.createElement('textarea', { className: 'form-textarea', value: clkDispatchNotes, onChange: (e) => setClkDispatchNotes(e.target.value), placeholder: 'Transport details, quantity dispatched, etc.', style: { minHeight: '80px' } })
+                    )
+                ),
+                React.createElement('div', { style: { marginTop: '16px', display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
+                    React.createElement('button', { className: 'btn btn-secondary', onClick: () => setClkDispatchModal(null) }, 'Cancel'),
+                    React.createElement('button', { className: 'btn btn-success', onClick: handleClkConfirmDispatch }, 'Confirm Dispatch')
+                )
+            )
+        ) : null
     );
 }
 
@@ -8480,7 +8794,15 @@ function CreatePOScreen({ indentId }) {
     if (!indent) return React.createElement('div', { className: 'placeholder-screen' }, 'Indent not found');
 
     const site = state.sites.find(s => s.id === indent.siteId);
-    const poNumber = 'PO-2026-' + String(state.purchaseOrders.length + 1).padStart(4, '0');
+    const getNextPONumber = () => {
+        const existing = (state.purchaseOrders || []).map(po => {
+            const match = (po.id || '').match(/PO-\d{4}-(\d{4})/);
+            return match ? parseInt(match[1]) : 0;
+        });
+        const maxNum = existing.length > 0 ? Math.max(...existing) : 0;
+        return 'PO-2026-' + String(maxNum + 1).padStart(4, '0');
+    };
+    const poNumber = getNextPONumber();
 
     const GST_OPTIONS = [0, 5, 12, 18, 28];
     const PAYMENT_TERMS_OPTIONS = ['Advance', '7 days', '15 days', '21 days', '30 days', '45 days', '60 days', '90 days'];
@@ -8604,6 +8926,8 @@ function CreatePOScreen({ indentId }) {
     const handleRequestApproval = () => {
         if (!vendorId) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please select a vendor', type: 'error' } }); return; }
         if (!indent.lineItems || indent.lineItems.length === 0) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Cannot create PO — indent has no line items', type: 'error' } }); return; }
+        if (!deliveryDate) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Delivery Date / ETA is required before requesting approval', type: 'error' } }); return; }
+        if (!paymentTerms) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Payment Terms are required before requesting approval', type: 'error' } }); return; }
         const po = buildPO();
         dispatch({ type: 'CREATE_PO', payload: { po, indentId: indent.id } });
         dispatch({ type: 'REQUEST_MD_PO_APPROVAL', payload: { poId: po.id, indentId: indent.id } });
@@ -8663,16 +8987,28 @@ function CreatePOScreen({ indentId }) {
                     })
                 ),
                 React.createElement('div', { className: 'form-group' },
-                    React.createElement('label', { className: 'form-label' }, 'Payment Terms'),
+                    React.createElement('label', { className: 'form-label' }, 'Payment Terms *'),
                     React.createElement('select', {
-                        className: 'form-select', value: paymentTerms,
-                        onChange: (e) => setPaymentTerms(e.target.value)
+                        className: 'form-select',
+                        value: PAYMENT_TERMS_OPTIONS.includes(paymentTerms) ? paymentTerms : (paymentTerms ? '__custom__' : ''),
+                        onChange: (e) => setPaymentTerms(e.target.value === '__custom__' ? 'Custom: ' : e.target.value)
                     },
                         React.createElement('option', { value: '' }, 'Select Payment Terms'),
                         PAYMENT_TERMS_OPTIONS.map(pt =>
                             React.createElement('option', { key: pt, value: pt }, pt)
-                        )
-                    )
+                        ),
+                        React.createElement('option', { value: '__custom__' }, 'Custom...')
+                    ),
+                    !PAYMENT_TERMS_OPTIONS.includes(paymentTerms) && paymentTerms
+                        ? React.createElement('input', {
+                            type: 'text',
+                            className: 'form-input',
+                            style: { marginTop: '8px' },
+                            value: paymentTerms,
+                            onChange: (e) => setPaymentTerms(e.target.value),
+                            placeholder: 'Enter custom payment terms (e.g. 50% advance, 50% on delivery)'
+                        })
+                        : null
                 )
             ),
 
@@ -8832,7 +9168,7 @@ function ProcurementPOsScreen() {
     var statusFilter = _statusFilter[0];
     var setStatusFilter = _statusFilter[1];
 
-    var allPOs = state.purchaseOrders || [];
+    var allPOs = (state.purchaseOrders || []).slice().sort(function(a, b) { return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); });
     var myPOs = statusFilter ? allPOs.filter(function(po) { return po.status === statusFilter; }) : allPOs;
 
     const handleFinalize = (poId) => {
@@ -9051,6 +9387,11 @@ function VendorScreen() {
     };
 
     const handleDelete = (vendorId) => {
+        const currentUser = state.users.find(u => u.id === state.currentUserId);
+        if (!currentUser || (currentUser.role !== 'md' && currentUser.role !== 'admin')) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Only MD or Admin can delete vendors', type: 'error' } });
+            return;
+        }
         if (window.confirm('Are you sure you want to delete this vendor?')) {
             dispatch({ type: 'DELETE_VENDOR', payload: vendorId });
             dispatch({ type: 'SHOW_TOAST', payload: { message: 'Vendor deleted', type: 'success' } });
@@ -9307,7 +9648,7 @@ function MDPOApprovalsScreen() {
     const [rejectPoId, setRejectPoId] = useState(null);
     const [rejectReason, setRejectReason] = useState('');
 
-    const pendingPOs = state.purchaseOrders.filter(po => po.status === 'pending_md_approval');
+    const pendingPOs = state.purchaseOrders.filter(po => po.status === 'pending_md_approval').sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 
     const handleApprovePO = (poId) => {
         dispatch({ type: 'MD_APPROVE_PO', payload: { poId } });
@@ -9545,6 +9886,18 @@ function StoreNewIndentScreen() {
         if (lineItems.some(li => !li.description.trim() || !li.qty)) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'All line items must have description and quantity', type: 'error' } }); return; }
         if (lineItems.some(li => parseInt(li.qty) <= 0 || li.qty === '')) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'All items must have a quantity of 1 or more', type: 'error' } }); return; }
         if (lineItems.some(li => !li.isBoq && !li.nonBoqReason.trim())) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Non-BOQ items require a reason', type: 'error' } }); return; }
+
+        var invalidItems = lineItems.filter(function(li) {
+            if (li.isBoq && !li.boqItemId) return true;
+            if (!li.isBoq && (!li.description || !li.description.trim())) return true;
+            if (!li.unit) return true;
+            if (!li.qty || parseInt(li.qty) <= 0) return true;
+            return false;
+        });
+        if (invalidItems.length > 0) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'All items must have Description, Unit, and Qty > 0', type: 'error' } });
+            return;
+        }
 
         const newIndent = createIndentObject('pending_approval');
         dispatch({ type: 'CREATE_INDENT', payload: newIndent });
@@ -10663,6 +11016,70 @@ function App() {
             window.removeEventListener('offline', handleOffline);
         };
     }, []);
+
+    // ============ REALTIME SUBSCRIPTIONS FOR CROSS-BROWSER SYNC ============
+    React.useEffect(function() {
+        if (!state.isAuthenticated) return;
+
+        var indentRefreshTimer = null;
+        var poRefreshTimer = null;
+        var channel = null;
+
+        function debouncedRefreshIndents() {
+            if (indentRefreshTimer) clearTimeout(indentRefreshTimer);
+            indentRefreshTimer = setTimeout(function() {
+                supabaseClient.schema('indent_flow').from('indents')
+                    .select('*, indent_line_items(*), indent_activity(*), indent_comments(*), indent_documents(*)')
+                    .then(function(res) {
+                        if (!res.error && res.data) {
+                            rawDispatch({ type: 'REFRESH_INDENTS', payload: res.data.map(transformIndent) });
+                            console.log('[NC_MIS] Realtime: refreshed ' + res.data.length + ' indents');
+                        }
+                    }).catch(function(err) {
+                        console.warn('[NC_MIS] Realtime indent refresh failed:', err.message);
+                    });
+            }, 600);
+        }
+
+        function debouncedRefreshPOs() {
+            if (poRefreshTimer) clearTimeout(poRefreshTimer);
+            poRefreshTimer = setTimeout(function() {
+                supabaseClient.schema('indent_flow').from('purchase_orders')
+                    .select('*, po_line_items(*), po_version_history(*)')
+                    .then(function(res) {
+                        if (!res.error && res.data) {
+                            rawDispatch({ type: 'REFRESH_POS', payload: res.data.map(transformPO) });
+                            console.log('[NC_MIS] Realtime: refreshed ' + res.data.length + ' POs');
+                        }
+                    }).catch(function(err) {
+                        console.warn('[NC_MIS] Realtime PO refresh failed:', err.message);
+                    });
+            }, 600);
+        }
+
+        try {
+            channel = supabaseClient.channel('indent-realtime')
+                .on('postgres_changes', { event: '*', schema: 'indent_flow', table: 'indents' }, debouncedRefreshIndents)
+                .on('postgres_changes', { event: '*', schema: 'indent_flow', table: 'indent_line_items' }, debouncedRefreshIndents)
+                .on('postgres_changes', { event: '*', schema: 'indent_flow', table: 'indent_activity' }, debouncedRefreshIndents)
+                .on('postgres_changes', { event: '*', schema: 'indent_flow', table: 'indent_comments' }, debouncedRefreshIndents)
+                .on('postgres_changes', { event: '*', schema: 'indent_flow', table: 'purchase_orders' }, debouncedRefreshPOs)
+                .on('postgres_changes', { event: '*', schema: 'indent_flow', table: 'po_line_items' }, debouncedRefreshPOs)
+                .subscribe(function(status) {
+                    console.log('[NC_MIS] Realtime subscription status:', status);
+                });
+        } catch(e) {
+            console.warn('[NC_MIS] Realtime subscription setup failed (enable Realtime on indent_flow tables in Supabase dashboard):', e.message);
+        }
+
+        return function() {
+            if (indentRefreshTimer) clearTimeout(indentRefreshTimer);
+            if (poRefreshTimer) clearTimeout(poRefreshTimer);
+            if (channel) {
+                try { supabaseClient.removeChannel(channel); } catch(e) { /* ignore cleanup errors */ }
+            }
+        };
+    }, [state.isAuthenticated]);
 
     React.useEffect(function() {
         // Log navigation events
