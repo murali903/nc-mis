@@ -1078,6 +1078,7 @@ function transformVendor(row) {
 function transformIndent(row) {
     var indent = {
         id: row.id,
+        displayNumber: row.indent_number || '',
         siteId: row.site_id,
         createdBy: row.created_by,
         createdAt: row.created_at,
@@ -1548,6 +1549,9 @@ async function supabaseSync(action, state, postState) {
                     }
                 }
                 sbCheck(indentRes, 'insert indent');
+                // Read back the number the database assigned, for notification text
+                var _numRes = await supabaseClient.schema('indent_flow').from('indents').select('indent_number').eq('id', indent.id).maybeSingle();
+                if (_numRes.data && _numRes.data.indent_number) action._indentNumber = _numRes.data.indent_number;
 
                 if (indent.lineItems && indent.lineItems.length > 0) {
                     var liRows = indent.lineItems.map(function(li) {
@@ -2226,6 +2230,7 @@ async function supabaseSync(action, state, postState) {
                 var siteUpd = {};
                 if (action.payload.name !== undefined) siteUpd.name = action.payload.name;
                 if (action.payload.location !== undefined) siteUpd.location = action.payload.location;
+                if (action.payload.officeId) siteUpd.office_id = action.payload.officeId;
                 sbCheck(await supabaseClient.schema('core').from('sites')
                     .update(siteUpd).eq('id', action.payload.siteId), 'save ' + action.type);
                 break;
@@ -2437,7 +2442,7 @@ async function supabaseSync(action, state, postState) {
                         id: genUUID(),
                         user_id: n.userId,
                         title: n.title || 'IndentFlow update',
-                        message: n.message || '',
+                        message: action._indentNumber ? String(n.message || '').split(NEW_INDENT_LABEL).join(action._indentNumber) : (n.message || ''),
                         link: n.link || (n.indentId ? '#indent/' + n.indentId : null),
                         is_read: false,
                     };
@@ -2460,6 +2465,9 @@ async function supabaseSync(action, state, postState) {
         } catch (logErr) {
             console.error('[NC_MIS] Could not write to app_logs:', logErr);
         }
+        // Re-throw so the caller can tell the user and put the screen back in step
+        // with the database (this used to be swallowed, hiding every failed save).
+        throw err;
     }
 }
 
@@ -3052,6 +3060,7 @@ function appReducer(state, action) {
                             ...s,
                             name: action.payload.name !== undefined ? action.payload.name : s.name,
                             location: action.payload.location !== undefined ? action.payload.location : s.location,
+                            officeId: action.payload.officeId || s.officeId,
                         }
                         : s
                 ),
@@ -3767,14 +3776,13 @@ function getSiteName(siteId, sites) {
     return site ? `${site.name} (${site.location})` : 'Unknown';
 }
 
+var NEW_INDENT_LABEL = 'IND-NEW';
+
 function getIndentDisplayId(indent, allIndents) {
   if (!indent) return '';
-  if (indent.displayNumber) return indent.displayNumber;
-  var sorted = (allIndents || []).slice().sort(function(a, b) {
-    return new Date(a.createdAt) - new Date(b.createdAt);
-  });
-  var idx = sorted.findIndex(function(i) { return i.id === indent.id; });
-  return 'IND-' + String(idx + 1).padStart(4, '0');
+  // The number is assigned by the database (indent_number). A brand-new indent shows
+  // this placeholder for a moment until its saved number comes back.
+  return indent.displayNumber || NEW_INDENT_LABEL;
 }
 
 function getPODisplayId(po) {
@@ -3905,7 +3913,7 @@ function LoginPage() {
   var setForgotMsg = _forgotMsg[1];
 
   var roleRoutes = {
-    admin: '#users',
+    admin: '#user-management',
     site_engineer: '#my-indents',
     storekeeper: '#store-dashboard',
     project_manager: '#dashboard',
@@ -4162,8 +4170,7 @@ function Sidebar() {
 
   const navItems = {
     admin: [
-      { label: '👥 Users', hash: '#users' },
-      { label: '🛡️ User Management', hash: '#user-management' },
+      { label: '👥 User Management', hash: '#user-management' },
       { label: '🏗️ Sites', hash: '#sites' },
       { label: '🏢 Office Management', hash: '#offices' },
       { label: '🔗 Assignments', hash: '#assignments' },
@@ -6738,20 +6745,21 @@ function SitesScreen() {
   const [editingId, setEditingId] = useState(null);
   const [name, setName] = useState('');
   const [location, setLocation] = useState('');
+  const [officeId, setOfficeId] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteError, setDeleteError] = useState('');
 
   const resetForm = () => {
-    setName(''); setLocation('');
+    setName(''); setLocation(''); setOfficeId('');
     setShowForm(false); setEditingId(null);
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (editingId) {
-      dispatch({ type: 'EDIT_SITE', payload: { siteId: editingId, name, location } });
+      dispatch({ type: 'EDIT_SITE', payload: { siteId: editingId, name, location, officeId } });
     } else {
-      dispatch({ type: 'ADD_SITE', payload: { id: genUUID(), name, location } });
+      dispatch({ type: 'ADD_SITE', payload: { id: genUUID(), name, location, officeId } });
     }
     resetForm();
   };
@@ -6760,6 +6768,7 @@ function SitesScreen() {
     setEditingId(site.id);
     setName(site.name);
     setLocation(site.location);
+    setOfficeId(site.officeId || '');
     setShowForm(true);
   };
 
@@ -6830,6 +6839,16 @@ function SitesScreen() {
           value: location, onChange: e => setLocation(e.target.value), required: true,
           style: { width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13, boxSizing: 'border-box' }
         })
+      ),
+      React.createElement('div', { style: { flex: 1 } },
+        React.createElement('label', { style: { display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#374151' } }, 'Office'),
+        React.createElement('select', {
+          value: officeId, onChange: e => setOfficeId(e.target.value), required: true,
+          style: { width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13, boxSizing: 'border-box' }
+        },
+          React.createElement('option', { value: '' }, 'Select office...'),
+          (state.offices || []).map(o => React.createElement('option', { key: o.id, value: o.id }, o.name))
+        )
       ),
       React.createElement('button', {
         type: 'submit',
@@ -7230,7 +7249,6 @@ function CreateIndentScreen() {
 
     const indent = {
       id: genUUID(),
-      displayNumber: 'IND-' + String((state.indents || []).length + 1).padStart(4, '0'),
       siteId: siteId,
       createdBy: user.id,
       createdAt: new Date().toISOString(),
@@ -11904,7 +11922,17 @@ function App() {
             return supabaseSync(action, preState, stateRef.current);
         }).catch(function(err) {
             console.error('[NC_MIS] Sync failed for ' + action.type + ':', err);
-            rawDispatch({ type: 'SHOW_TOAST', payload: { message: 'Sync error: ' + err.message, type: 'error' } });
+            rawDispatch({ type: 'SHOW_TOAST', payload: { message: 'Not saved: ' + err.message, type: 'error' } });
+            // The screen already shows the change; reload from the database so it
+            // goes back to what is actually saved.
+            var uid = stateRef.current.currentUserId;
+            if (uid) {
+                return loadAllData(uid).then(function(data) {
+                    rawDispatch({ type: 'LOAD_DATA', payload: data });
+                }).catch(function(reloadErr) {
+                    console.error('[NC_MIS] Reload after failed save also failed:', reloadErr);
+                });
+            }
         });
     }, []);
 
@@ -11935,7 +11963,7 @@ function App() {
                                     rawDispatch({ type: 'LOAD_DATA', payload: data });
                                     rawDispatch({ type: 'LOGIN_AS_USER', payload: profile });
                                     var roleRoutes = {
-                                        admin: '#users', site_engineer: '#my-indents', storekeeper: '#store-pending',
+                                        admin: '#user-management', site_engineer: '#my-indents', storekeeper: '#store-pending',
                                         project_manager: '#dashboard', procurement_manager: '#procurement-dashboard',
                                         procurement_clerk: '#clerk-assigned', md: '#dashboard',
                                     };
@@ -12106,7 +12134,7 @@ function App() {
         if (hash === '#approved') return { screen: 'approved' };
         if (hash === '#all-indents') return { screen: 'all-indents' };
         if (hash === '#escalated') return { screen: 'escalated' };
-        if (hash === '#users') return { screen: 'users' };
+        if (hash === '#users') return { screen: 'user-management' }; // old Users screen merged into User Management
         if (hash === '#sites') return { screen: 'sites' };
         if (hash === '#assignments') return { screen: 'assignments' };
         if (hash === '#procurement-approved') return { screen: 'procurement-approved' };
