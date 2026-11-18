@@ -9,14 +9,22 @@ function DocumentsSection(_ref) {
   var dispatch = _state_dispatch[1];
 
   var currentUser = state.currentUser;
-  var isProcurement = currentUser && (currentUser.role === 'procurement_manager' || currentUser.role === 'procurement_clerk');
+  var role = currentUser ? currentUser.role : '';
+  var isProcurement = role === 'procurement_manager' || role === 'procurement_clerk';
+  var isCreator = indent.createdBy === state.currentUserId;
+  // Who may attach: procurement, the person who raised the indent, and the approvers
+  var canUpload = isProcurement || isCreator || role === 'project_manager' || role === 'md' || role === 'admin';
+  var embedded = !!_ref.embedded;   // shown inside the edit / revise screens
 
   var documents = indent.documents || [];
 
-  var categoryOptions = ['Quotation', 'Purchase Order', 'Proforma Invoice', 'Estimate', 'Delivery Challan', 'Other'];
-  var _cat = useState('Quotation');
+  var categoryOptions = ATTACHMENT_CATEGORIES;
+  var _cat = useState(isProcurement ? 'Quotation' : 'Drawing');
   var selectedCategory = _cat[0];
   var setSelectedCategory = _cat[1];
+  var _item = useState('');
+  var selectedItemId = _item[0];
+  var setSelectedItemId = _item[1];
 
   var fileInputRef = useRef(null);
   var _uploading = useState(false);
@@ -28,6 +36,14 @@ function DocumentsSection(_ref) {
     return po.indentId === indent.id;
   });
 
+  var itemLabel = function(lineItemId) {
+    if (!lineItemId) return 'Whole indent';
+    var idx = (indent.lineItems || []).findIndex(function(li) { return li.id === lineItemId; });
+    if (idx === -1) return 'Whole indent';
+    var li = indent.lineItems[idx];
+    return 'Item ' + (idx + 1) + ': ' + (li.description || li.name || '');
+  };
+
   var handleUpload = function() {
     var fileInput = fileInputRef.current;
     if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
@@ -36,56 +52,24 @@ function DocumentsSection(_ref) {
     }
     var file = fileInput.files[0];
     setUploading(true);
-
-    var reader = new FileReader();
-    reader.onload = function(e) {
-      var base64Data = e.target.result;
-      var doc = {
-        id: 'DOC-' + Date.now(),
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        category: selectedCategory,
-        data: base64Data,
-        uploadedBy: state.currentUserId,
-        uploadedAt: new Date().toISOString()
-      };
+    uploadIndentFile(indent.id, file, selectedCategory, selectedItemId || null).then(function(doc) {
+      doc.uploadedBy = state.currentUserId;
       dispatch({ type: 'ADD_DOCUMENT', payload: { indentId: indent.id, document: doc } });
-      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Document uploaded successfully', type: 'success' } });
-      setUploading(false);
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'File attached', type: 'success' } });
       if (fileInputRef.current) fileInputRef.current.value = '';
-    };
-    reader.onerror = function() {
-      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Failed to read file', type: 'error' } });
-      setUploading(false);
-    };
-    reader.readAsDataURL(file);
+    }).catch(function(err) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: err.message || 'Could not upload the file', type: 'error' } });
+    }).then(function() { setUploading(false); });
   };
 
-  var handleDelete = function(docId) {
-    if (confirm('Are you sure you want to delete this document?')) {
-      dispatch({ type: 'DELETE_DOCUMENT', payload: { indentId: indent.id, documentId: docId } });
-      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Document deleted', type: 'success' } });
+  var handleDelete = function(doc) {
+    if (confirm('Remove "' + doc.name + '" from this indent?')) {
+      dispatch({ type: 'DELETE_DOCUMENT', payload: { indentId: indent.id, documentId: doc.id, documentName: doc.name } });
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'File removed', type: 'success' } });
     }
   };
 
-  var handleView = function(doc) {
-    if (!doc.data) {
-      dispatch({ type: 'SHOW_TOAST', payload: { message: 'File not available — document was uploaded without file data', type: 'error' } });
-      return;
-    }
-    var newTab = window.open();
-    if (newTab) {
-      newTab.document.write('<html><head><title>' + escapeHtml(doc.name) + '</title></head><body style="margin:0;">');
-      if (doc.type && doc.type.startsWith('image/')) {
-        newTab.document.write('<img src="' + doc.data + '" style="max-width:100%;height:auto;" />');
-      } else {
-        newTab.document.write('<iframe src="' + doc.data + '" style="width:100%;height:100vh;border:none;"></iframe>');
-      }
-      newTab.document.write('</body></html>');
-      newTab.document.close();
-    }
-  };
+  var handleView = function(doc) { openIndentDocument(doc, dispatch); };
 
   var formatSize = function(bytes) {
     if (!bytes) return 'N/A';
@@ -100,6 +84,11 @@ function DocumentsSection(_ref) {
   };
 
   var categoryBadgeColors = {
+    'Drawing': '#0ea5e9',
+    'Shop Drawing': '#0284c7',
+    'Sketch': '#14b8a6',
+    'Specification': '#64748b',
+    'Photo': '#ec4899',
     'Quotation': '#3b82f6',
     'Purchase Order': '#8b5cf6',
     'Proforma Invoice': '#f59e0b',
@@ -109,10 +98,10 @@ function DocumentsSection(_ref) {
   };
 
   return React.createElement('div', { style: { marginTop: '24px' } },
-    React.createElement('h3', { style: { marginBottom: '16px', fontSize: '18px', fontWeight: '600' } }, 'Documents'),
+    React.createElement('h3', { style: { marginBottom: '16px', fontSize: '18px', fontWeight: '600' } }, 'Documents & Drawings'),
 
-    // Upload form (procurement roles only)
-    isProcurement ? React.createElement('div', {
+    // Upload form
+    canUpload ? React.createElement('div', {
       style: { background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '16px', marginBottom: '16px' }
     },
       React.createElement('div', { style: { display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' } },
@@ -121,9 +110,22 @@ function DocumentsSection(_ref) {
           React.createElement('input', {
             ref: fileInputRef,
             type: 'file',
-            accept: '.pdf,.jpg,.jpeg,.png',
+            accept: ATTACHMENT_ACCEPT,
             style: { fontSize: '14px' }
           })
+        ),
+        React.createElement('div', { style: { minWidth: '180px' } },
+          React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Applies to'),
+          React.createElement('select', {
+            value: selectedItemId,
+            onChange: function(e) { setSelectedItemId(e.target.value); },
+            style: { padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', maxWidth: '240px' }
+          },
+            React.createElement('option', { value: '' }, 'Whole indent'),
+            (indent.lineItems || []).map(function(li, i) {
+              return React.createElement('option', { key: li.id || i, value: li.id }, 'Item ' + (i + 1) + ': ' + String(li.description || li.name || '').slice(0, 40));
+            })
+          )
         ),
         React.createElement('div', { style: { minWidth: '180px' } },
           React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Category'),
@@ -146,7 +148,7 @@ function DocumentsSection(_ref) {
     ) : null,
 
     // Document list
-    documents.length === 0 && linkedPOs.length === 0
+    documents.length === 0 && (embedded || linkedPOs.length === 0)
       ? React.createElement('p', { style: { color: '#6b7280', fontSize: '14px', fontStyle: 'italic' } }, 'No documents attached.')
       : null,
 
@@ -156,6 +158,7 @@ function DocumentsSection(_ref) {
           React.createElement('tr', { style: { background: '#f9fafb' } },
             React.createElement('th', { style: { textAlign: 'left', padding: '10px 12px', fontWeight: '600' } }, 'Name'),
             React.createElement('th', { style: { textAlign: 'left', padding: '10px 12px', fontWeight: '600' } }, 'Category'),
+            React.createElement('th', { style: { textAlign: 'left', padding: '10px 12px', fontWeight: '600' } }, 'Applies to'),
             React.createElement('th', { style: { textAlign: 'left', padding: '10px 12px', fontWeight: '600' } }, 'Size'),
             React.createElement('th', { style: { textAlign: 'left', padding: '10px 12px', fontWeight: '600' } }, 'Uploaded By'),
             React.createElement('th', { style: { textAlign: 'left', padding: '10px 12px', fontWeight: '600' } }, 'Date'),
@@ -172,6 +175,7 @@ function DocumentsSection(_ref) {
                   style: { background: badgeColor, color: '#fff', padding: '2px 8px', borderRadius: '12px', fontSize: '12px', fontWeight: '500' }
                 }, doc.category)
               ),
+              React.createElement('td', { style: { padding: '10px 12px', color: '#374151' } }, itemLabel(doc.lineItemId)),
               React.createElement('td', { style: { padding: '10px 12px', color: '#6b7280' } }, formatSize(doc.size)),
               React.createElement('td', { style: { padding: '10px 12px' } }, getUserName(doc.uploadedBy, state.users)),
               React.createElement('td', { style: { padding: '10px 12px', color: '#6b7280' } }, formatDate(doc.uploadedAt)),
@@ -181,11 +185,11 @@ function DocumentsSection(_ref) {
                   style: { marginRight: '6px', fontSize: '12px', padding: '4px 10px' },
                   onClick: function() { handleView(doc); }
                 }, 'View / Download'),
-                isProcurement ? React.createElement('button', {
+                (isProcurement || doc.uploadedBy === state.currentUserId) ? React.createElement('button', {
                   className: 'btn btn-danger',
                   style: { fontSize: '12px', padding: '4px 10px' },
-                  onClick: function() { handleDelete(doc.id); }
-                }, 'Delete') : null
+                  onClick: function() { handleDelete(doc); }
+                }, 'Remove') : null
               )
             );
           })
@@ -194,7 +198,7 @@ function DocumentsSection(_ref) {
     ) : null,
 
     // Linked POs section
-    linkedPOs.length > 0 ? React.createElement('div', { style: { marginTop: '16px' } },
+    (!embedded && linkedPOs.length > 0) ? React.createElement('div', { style: { marginTop: '16px' } },
       React.createElement('h4', { style: { fontSize: '15px', fontWeight: '600', marginBottom: '8px', color: '#374151' } }, 'Auto-Attached Purchase Orders'),
       linkedPOs.map(function(po) {
         return React.createElement('div', {
@@ -202,8 +206,8 @@ function DocumentsSection(_ref) {
           style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: '6px', marginBottom: '6px', background: '#f0fdf4' }
         },
           React.createElement('div', null,
-            React.createElement('span', { style: { fontWeight: '500' } }, po.id),
-            React.createElement('span', { style: { marginLeft: '12px', color: '#6b7280', fontSize: '13px' } }, 'Vendor: ' + po.vendorName),
+            React.createElement('span', { style: { fontWeight: '500' } }, getPODisplayId(po)),
+            React.createElement('span', { style: { marginLeft: '12px', color: '#6b7280', fontSize: '13px' } }, 'Vendor: ' + (po.vendorName || '-') + '  |  ' + statusLabel(po.status)),
             React.createElement('span', {
               style: { marginLeft: '12px', background: '#8b5cf6', color: '#fff', padding: '2px 8px', borderRadius: '12px', fontSize: '12px' }
             }, 'Purchase Order')
@@ -220,7 +224,8 @@ function DocumentsSection(_ref) {
 }
 
 // ─────────────────────────────────────────────
-// NEW: IndentActionButtons (with corrected payloads)
+// IndentActionButtons: every action a user can take on an indent, shown on the
+// indent page itself (so nobody has to go back to a list to act).
 // ─────────────────────────────────────────────
 function IndentActionButtons(_ref) {
   var indent = _ref.indent;
@@ -228,123 +233,142 @@ function IndentActionButtons(_ref) {
   var state = _state_dispatch[0];
   var dispatch = _state_dispatch[1];
 
+  var _mode = useState('');        // '', approve, reject, return, escalate, md_approve, md_return
+  var mode = _mode[0], setMode = _mode[1];
+  var _text = useState('');
+  var text = _text[0], setText = _text[1];
+  var _assignClerk = useState('');
+  var assignClerkId = _assignClerk[0], setAssignClerkId = _assignClerk[1];
+
   var currentUser = state.currentUser;
   if (!currentUser) return null;
 
   var role = currentUser.role;
   var status = indent.status;
+  var isCreator = indent.createdBy === state.currentUserId;
+  var number = getIndentDisplayId(indent, state.indents);
 
-  var _showReject = useState(false);
-  var showRejectBox = _showReject[0];
-  var setShowRejectBox = _showReject[1];
-
-  var _showReturn = useState(false);
-  var showReturnBox = _showReturn[0];
-  var setShowReturnBox = _showReturn[1];
-
-  var _reason = useState('');
-  var reason = _reason[0];
-  var setReason = _reason[1];
-
-  var _assignClerk = useState('');
-  var assignClerkId = _assignClerk[0];
-  var setAssignClerkId = _assignClerk[1];
+  var toast = function(message, type) { dispatch({ type: 'SHOW_TOAST', payload: { message: message, type: type || 'success' } }); };
+  var open = function(m) { setMode(mode === m ? '' : m); setText(''); };
+  var close = function() { setMode(''); setText(''); };
 
   var clerkList = (state.users || []).filter(function(u) { return u.role === 'procurement_clerk'; });
 
-  var handleApprove = function() {
-    dispatch({ type: 'APPROVE_INDENT', payload: { indentId: indent.id, approvedBy: state.currentUserId } });
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent approved', type: 'success' } });
+  // What each decision needs and does
+  var decisions = {
+    approve:    { title: 'Approve ' + number, label: role === 'md' ? 'Remarks (required)' : 'Note (optional)', required: role === 'md',
+                  confirm: 'Confirm Approval', cls: 'btn btn-success',
+                  run: function() { dispatch({ type: 'APPROVE_INDENT', payload: { indentId: indent.id, approvedBy: state.currentUserId, note: text.trim() } }); toast('Indent approved'); } },
+    reject:     { title: 'Reject ' + number, label: 'Reason for rejection (required)', required: true,
+                  confirm: 'Confirm Rejection', cls: 'btn btn-danger',
+                  run: function() { dispatch({ type: 'REJECT_INDENT', payload: { indentId: indent.id, rejectedBy: state.currentUserId, reason: text.trim() } }); toast('Indent rejected'); } },
+    'return':   { title: 'Return ' + number + ' for revision', label: 'What needs to change (required)', required: true,
+                  confirm: 'Confirm Return', cls: 'btn btn-warning',
+                  run: function() { dispatch({ type: 'REJECT_INDENT', payload: { indentId: indent.id, rejectedBy: state.currentUserId, reason: text.trim(), returnForRevision: true } }); toast('Indent returned for revision'); } },
+    escalate:   { title: 'Escalate ' + number + ' to the MD', label: 'Why this needs the MD (required)', required: true,
+                  confirm: 'Confirm Escalation', cls: 'btn btn-warning',
+                  run: function() { dispatch({ type: 'ESCALATE_TO_MD', payload: { indentId: indent.id, remarks: text.trim(), escalatedBy: state.currentUserId } }); toast('Indent escalated to MD'); } },
+    md_approve: { title: 'Approve ' + number + ' — OK to proceed', label: 'MD remarks (required)', required: true,
+                  confirm: 'Confirm Approval', cls: 'btn btn-success',
+                  run: function() { dispatch({ type: 'MD_ESCALATION_APPROVE', payload: { indentId: indent.id, remarks: text.trim() } }); toast('Approved — indent is with procurement'); } },
+    md_return:  { title: 'Return ' + number + ' for revision', label: 'MD remarks (required)', required: true,
+                  confirm: 'Confirm Return', cls: 'btn btn-danger',
+                  run: function() { dispatch({ type: 'MD_ESCALATION_DISMISS', payload: { indentId: indent.id, remarks: text.trim() } }); toast('Returned for revision'); } },
   };
 
-  var handleReject = function() {
-    if (!reason.trim()) {
-      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide a reason for rejection', type: 'error' } });
-      return;
-    }
-    dispatch({ type: 'REJECT_INDENT', payload: { indentId: indent.id, rejectedBy: state.currentUserId, reason: reason } });
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent rejected', type: 'success' } });
-    setShowRejectBox(false);
-    setReason('');
-  };
-
-  var handleEscalate = function() {
-    dispatch({ type: 'ESCALATE_TO_MD', payload: { indentId: indent.id, remarks: '', escalatedBy: state.currentUserId } });
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent escalated to MD', type: 'success' } });
-  };
-
-  var handleReturn = function() {
-    if (!reason.trim()) {
-      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide a reason for returning', type: 'error' } });
-      return;
-    }
-    dispatch({ type: 'REJECT_INDENT', payload: { indentId: indent.id, rejectedBy: state.currentUserId, reason: reason, returnForRevision: true } });
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent returned for revision', type: 'success' } });
-    setShowReturnBox(false);
-    setReason('');
-  };
-
-  var handleAssign = function() {
-    if (!assignClerkId) {
-      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please select a clerk', type: 'error' } });
-      return;
-    }
-    dispatch({ type: 'ASSIGN_INDENT', payload: { indentId: indent.id, userId: assignClerkId } });
-    var clerkName = getUserName(assignClerkId, state.users);
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent assigned to ' + clerkName, type: 'success' } });
-  };
-
-  var handleSelfAssign = function() {
-    dispatch({ type: 'ASSIGN_INDENT', payload: { indentId: indent.id, userId: state.currentUserId } });
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent self-assigned', type: 'success' } });
+  var confirmDecision = function() {
+    var d = decisions[mode];
+    if (!d) return;
+    if (d.required && !text.trim()) { toast('Please fill in: ' + d.label.replace(' (required)', ''), 'error'); return; }
+    d.run();
+    close();
   };
 
   var buttonWrap = { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '16px' };
+  var noteBox = function(bg, border, children) {
+    return React.createElement('div', {
+      style: { background: bg, border: '1px solid ' + border, borderRadius: 8, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#1e293b' }
+    }, children);
+  };
 
-  // Site engineer + draft — allow submit for approval
-  if (role === 'site_engineer' && status === 'draft') {
+  var decisionForm = function() {
+    var d = decisions[mode];
+    if (!d) return null;
+    return React.createElement('div', {
+      style: { marginBottom: 16, padding: 16, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8 }
+    },
+      React.createElement('div', { style: { fontWeight: 700, fontSize: 14, marginBottom: 8, color: '#1e293b' } }, d.title),
+      React.createElement('label', { style: { display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 } }, d.label),
+      React.createElement('textarea', {
+        value: text, onChange: function(e) { setText(e.target.value); }, rows: 3, autoFocus: true,
+        'aria-label': d.label,
+        style: { width: '100%', padding: 8, border: '1px solid #d1d5db', borderRadius: 6, marginBottom: 8, boxSizing: 'border-box', fontSize: 13 }
+      }),
+      React.createElement('div', { style: { display: 'flex', gap: 8 } },
+        React.createElement('button', { className: d.cls, onClick: confirmDecision }, d.confirm),
+        React.createElement('button', { className: 'btn btn-secondary', onClick: close }, 'Cancel')
+      )
+    );
+  };
+
+  // The person who raised it: a draft can be submitted or edited
+  if (isCreator && status === 'draft') {
     return React.createElement('div', { style: buttonWrap },
       React.createElement('button', { className: 'btn btn-success', onClick: function() {
-        if (!indent.lineItems || indent.lineItems.length === 0) {
-          dispatch({ type: 'SHOW_TOAST', payload: { message: 'Cannot submit: indent has no line items', type: 'error' } });
-          return;
-        }
+        if (!indent.lineItems || indent.lineItems.length === 0) { toast('Cannot submit: indent has no line items', 'error'); return; }
         dispatch({ type: 'SUBMIT_INDENT', payload: { indentId: indent.id, userId: state.currentUserId } });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent submitted for approval', type: 'success' } });
+        toast('Indent submitted for approval');
       } }, 'Submit for Approval'),
       React.createElement('a', { href: '#edit-draft/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Edit Indent')
     );
   }
 
-  // PM/MD + pending_approval
+  // The person who raised it: a rejected / returned indent can be revised
+  if (isCreator && (status === 'rejected' || status === 'returned_for_revision')) {
+    var why = indent.mdEscalationResult === 'dismissed' && indent.mdRemarks ? ('MD: ' + indent.mdRemarks)
+            : (indent.returnReason || indent.rejectionReason || '');
+    return React.createElement('div', null,
+      noteBox('#fff7ed', '#fdba74', [
+        React.createElement('strong', { key: 'a' }, status === 'rejected' ? 'This indent was rejected. ' : 'This indent was returned to you for revision. '),
+        why ? React.createElement('span', { key: 'b' }, 'Reason: ' + why) : null
+      ]),
+      React.createElement('div', { style: buttonWrap },
+        React.createElement('a', { href: '#revise/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Revise and Resubmit')
+      )
+    );
+  }
+
+  // Approvers: an indent waiting for approval
   if ((role === 'project_manager' || role === 'md') && status === 'pending_approval') {
+    if (role === 'project_manager' && isCreator) {
+      return noteBox('#eff6ff', '#93c5fd',
+        'You raised this indent, so you cannot approve it yourself. It is waiting for the MD.');
+    }
     return React.createElement('div', null,
       React.createElement('div', { style: buttonWrap },
-        React.createElement('button', { className: 'btn btn-success', onClick: handleApprove }, 'Approve'),
-        React.createElement('button', { className: 'btn btn-danger', onClick: function() { setShowRejectBox(!showRejectBox); setShowReturnBox(false); setReason(''); } }, 'Reject'),
-        role === 'project_manager' ? React.createElement('button', { className: 'btn btn-warning', onClick: handleEscalate }, 'Escalate to MD') : null,
-        React.createElement('button', { className: 'btn btn-secondary', onClick: function() { setShowReturnBox(!showReturnBox); setShowRejectBox(false); setReason(''); } }, 'Return for Revision')
+        React.createElement('button', { className: 'btn btn-success', onClick: function() { open('approve'); } }, 'Approve'),
+        React.createElement('button', { className: 'btn btn-secondary', onClick: function() { open('return'); } }, 'Return for Revision'),
+        React.createElement('button', { className: 'btn btn-danger', onClick: function() { open('reject'); } }, 'Reject'),
+        role === 'project_manager' ? React.createElement('button', { className: 'btn btn-warning', onClick: function() { open('escalate'); } }, 'Escalate to MD') : null
       ),
-      showRejectBox ? React.createElement('div', { style: { marginBottom: '16px' } },
-        React.createElement('textarea', {
-          value: reason,
-          onChange: function(e) { setReason(e.target.value); },
-          placeholder: 'Reason for rejection...',
-          rows: 3,
-          style: { width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', marginBottom: '8px', boxSizing: 'border-box' }
-        }),
-        React.createElement('button', { className: 'btn btn-danger', onClick: handleReject }, 'Confirm Rejection')
-      ) : null,
-      showReturnBox ? React.createElement('div', { style: { marginBottom: '16px' } },
-        React.createElement('textarea', {
-          value: reason,
-          onChange: function(e) { setReason(e.target.value); },
-          placeholder: 'Reason for returning...',
-          rows: 3,
-          style: { width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', marginBottom: '8px', boxSizing: 'border-box' }
-        }),
-        React.createElement('button', { className: 'btn btn-secondary', onClick: handleReturn }, 'Confirm Return')
-      ) : null
+      decisionForm()
+    );
+  }
+
+  // MD: an escalated indent
+  if (status === 'escalated_to_md') {
+    var info = noteBox('#fdf2f8', '#f9a8d4', [
+      React.createElement('strong', { key: 'a' }, 'Escalated to the MD' + (indent.escalatedBy ? ' by ' + getUserName(indent.escalatedBy, state.users) : '') + '. '),
+      indent.escalationRemarks ? React.createElement('span', { key: 'b' }, 'Remarks: ' + indent.escalationRemarks) : null
+    ]);
+    if (role !== 'md') return info;
+    return React.createElement('div', null,
+      info,
+      React.createElement('div', { style: buttonWrap },
+        React.createElement('button', { className: 'btn btn-success', onClick: function() { open('md_approve'); } }, 'Approve — OK to Proceed'),
+        React.createElement('button', { className: 'btn btn-danger', onClick: function() { open('md_return'); } }, 'Return for Revision')
+      ),
+      decisionForm()
     );
   }
 
@@ -354,6 +378,7 @@ function IndentActionButtons(_ref) {
       React.createElement('select', {
         value: assignClerkId,
         onChange: function(e) { setAssignClerkId(e.target.value); },
+        'aria-label': 'Assign to clerk',
         style: { padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px' }
       },
         React.createElement('option', { value: '' }, '-- Select Clerk --'),
@@ -361,8 +386,15 @@ function IndentActionButtons(_ref) {
           return React.createElement('option', { key: c.id, value: c.id }, getUserName(c.id, state.users));
         })
       ),
-      React.createElement('button', { className: 'btn btn-primary', onClick: handleAssign }, 'Assign'),
-      React.createElement('button', { className: 'btn btn-success', onClick: handleSelfAssign }, 'Self-Assign'),
+      React.createElement('button', { className: 'btn btn-primary', onClick: function() {
+        if (!assignClerkId) { toast('Please select a clerk', 'error'); return; }
+        dispatch({ type: 'ASSIGN_INDENT', payload: { indentId: indent.id, userId: assignClerkId } });
+        toast('Indent assigned to ' + getUserName(assignClerkId, state.users));
+      } }, 'Assign'),
+      React.createElement('button', { className: 'btn btn-success', onClick: function() {
+        dispatch({ type: 'ASSIGN_INDENT', payload: { indentId: indent.id, userId: state.currentUserId } });
+        toast('Indent self-assigned');
+      } }, 'Self-Assign'),
       React.createElement('a', { href: '#create-po/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Create PO')
     );
   }
@@ -372,29 +404,27 @@ function IndentActionButtons(_ref) {
     return React.createElement('div', { style: buttonWrap },
       React.createElement('a', { href: '#create-po/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Create PO'),
       // Dispatch needs vendor, expected delivery and document reference, which are
-      // collected on the In Progress screen; this button used to skip them.
+      // collected on the In Progress screen.
       React.createElement('a', {
         href: role === 'procurement_clerk' ? '#clerk-assigned' : '#procurement-progress',
         className: 'btn btn-success', style: { textDecoration: 'none' },
         title: 'Opens the In Progress list, where dispatch details are entered'
-      }, 'Dispatch (enter details)')
+      }, 'Dispatch without PO (enter details)')
     );
   }
 
-  // site_engineer + rejected/returned_for_revision
-  if (role === 'site_engineer' && (status === 'rejected' || status === 'returned_for_revision')) {
-    return React.createElement('div', { style: buttonWrap },
-      React.createElement('a', { href: '#revise/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Revise')
-    );
-  }
-
-  // storekeeper + dispatched
+  // storekeeper: material can be received
   if (role === 'storekeeper' && status === 'dispatched') {
     return React.createElement('div', { style: buttonWrap },
       React.createElement('a', { href: '#receipt/' + indent.id, className: 'btn btn-success', style: { textDecoration: 'none' } }, 'Receive Items')
     );
   }
 
-  // Nothing for other combos
+  // After an MD decision, keep the MD's remarks visible to everyone
+  if (indent.mdRemarks && indent.mdEscalationResult) {
+    return noteBox('#f0fdf4', '#86efac',
+      'MD ' + (indent.mdEscalationResult === 'approved' ? 'approved' : 'returned') + ' this indent: ' + indent.mdRemarks);
+  }
+
   return null;
 }

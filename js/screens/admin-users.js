@@ -665,6 +665,7 @@ function OrgSettingsScreen() {
     companyGSTIN: settings.companyGSTIN || '',
     companyPhone: settings.companyPhone || '',
     companyPAN: settings.companyPAN || '',
+    poMdApprovalThreshold: String(poApprovalLimit(state)),
   });
   var form = _form[0];
   var setForm = _form[1];
@@ -679,7 +680,12 @@ function OrgSettingsScreen() {
   };
 
   var handleSave = function() {
-    dispatch({ type: 'UPDATE_ORG_SETTINGS', payload: form });
+    var limitText = String(form.poMdApprovalThreshold || '').trim();
+    if (limitText === '' || isNaN(Number(limitText)) || Number(limitText) < 0) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Enter the PO value above which MD approval is required (a number, 0 or more)', type: 'error' } });
+      return;
+    }
+    dispatch({ type: 'UPDATE_ORG_SETTINGS', payload: Object.assign({}, form, { poMdApprovalThreshold: String(Number(limitText)) }) });
     dispatch({ type: 'SHOW_TOAST', payload: { message: 'Organisation settings saved', type: 'success' } });
     setSaved(true);
   };
@@ -691,6 +697,8 @@ function OrgSettingsScreen() {
     { key: 'companyGSTIN', label: 'Company GSTIN', type: 'text' },
     { key: 'companyPhone', label: 'Company Phone', type: 'tel' },
     { key: 'companyPAN', label: 'Company PAN', type: 'text' },
+    { key: 'poMdApprovalThreshold', label: 'PO value above which MD approval is required (Rs., including GST)', type: 'number',
+      help: 'A PO at or below this value can be issued by the procurement manager without MD approval. Above it, MD approval is compulsory. Enter 0 to send every PO to the MD.' },
   ];
 
   return React.createElement('div', { style: { padding: '20px', maxWidth: '700px' } },
@@ -711,7 +719,8 @@ function OrgSettingsScreen() {
                 value: form[f.key],
                 onChange: function(e) { handleChange(f.key, e.target.value); },
                 style: { width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box' }
-              })
+              }),
+          f.help ? React.createElement('div', { style: { fontSize: '12px', color: '#64748b', marginTop: '4px' } }, f.help) : null
         );
       }),
       React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginTop: '20px' } },

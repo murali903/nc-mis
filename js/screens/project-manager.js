@@ -11,9 +11,11 @@ function DashboardScreen() {
 
   if (role === 'project_manager') {
     const allIndents = state.indents;
-    const pending = allIndents.filter(i => i.status === 'pending_approval');
+    // Indents this PM can decide (their own go to the MD)
+    const pending = allIndents.filter(i => i.status === 'pending_approval' && i.createdBy !== user.id);
     const approved = allIndents.filter(i => i.status === 'approved');
-    const rejected = allIndents.filter(i => i.status === 'rejected');
+    const withMD = allIndents.filter(i => i.status === 'escalated_to_md' || (i.status === 'pending_approval' && i.createdBy === user.id));
+    const backToMe = allIndents.filter(i => i.createdBy === user.id && (i.status === 'rejected' || i.status === 'returned_for_revision'));
 
     // Sort pending by priority (urgent first, then normal, then low)
     const sortedPending = [...pending].sort((a, b) =>
@@ -21,9 +23,10 @@ function DashboardScreen() {
     );
 
     const stats = [
-      { label: 'Pending', value: pending.length, color: '#f59e0b', bg: '#fef9c3', route: '#approvals' },
+      { label: 'Pending my approval', value: pending.length, color: '#f59e0b', bg: '#fef9c3', route: '#approvals' },
+      { label: 'Returned / rejected to me', value: backToMe.length, color: '#dc2626', bg: '#fee2e2', route: '#my-indents' },
+      { label: 'Waiting for MD', value: withMD.length, color: '#be185d', bg: '#fce7f3', route: '#all-indents' },
       { label: 'Approved', value: approved.length, color: '#16a34a', bg: '#dcfce7', route: '#approved' },
-      { label: 'Rejected', value: rejected.length, color: '#dc2626', bg: '#fee2e2', route: '#all-indents' },
       { label: 'Total', value: allIndents.length, color: '#6366f1', bg: '#eef2ff', route: '#all-indents' },
     ];
 
@@ -33,7 +36,7 @@ function DashboardScreen() {
       }, 'Project Manager Dashboard'),
 
       React.createElement('div', {
-        style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 32 }
+        style: { display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 32 }
       },
         stats.map(s =>
           React.createElement('div', {
@@ -77,7 +80,7 @@ function DashboardScreen() {
                   React.createElement('tr', {
                     key: indent.id,
                     style: { borderBottom: '1px solid #f1f5f9', cursor: 'pointer' },
-                    onClick: () => { window.location.hash = '#approve-detail/' + indent.id; }
+                    onClick: () => { window.location.hash = '#indent/' + indent.id; }
                   },
                     React.createElement('td', { style: { padding: '10px 12px', fontWeight: 600, color: '#6366f1' } }, getIndentDisplayId(indent, state.indents)),
                     React.createElement('td', { style: { padding: '10px 12px' } }, getSiteName(indent.siteId, state.sites)),
@@ -97,9 +100,10 @@ function DashboardScreen() {
     const allIndents = state.indents;
     const pendingPOs = (state.purchaseOrders || []).filter(po => po.status === 'pending_approval');
     const stats = [
+      { label: 'Indents awaiting approval', value: allIndents.filter(i => i.status === 'pending_approval').length, color: '#f59e0b', bg: '#fef9c3', route: '#approvals' },
+      { label: 'Escalated to me', value: allIndents.filter(i => i.status === 'escalated_to_md').length, color: '#be185d', bg: '#fce7f3', route: '#md-escalations' },
+      { label: 'POs awaiting approval', value: pendingPOs.length, color: '#dc2626', bg: '#fee2e2', route: '#md-po-approvals' },
       { label: 'Total Indents', value: allIndents.length, color: '#6366f1', bg: '#eef2ff', route: '#all-indents' },
-      { label: 'Submitted', value: allIndents.filter(i => i.status === 'pending_approval').length, color: '#f59e0b', bg: '#fef9c3', route: '#approvals' },
-      { label: 'POs Pending', value: pendingPOs.length, color: '#dc2626', bg: '#fee2e2', route: '#md-po-approvals' },
       { label: 'Completed', value: allIndents.filter(i => i.status === 'completed').length, color: '#059669', bg: '#d1fae5', route: '#all-indents' },
     ];
 
@@ -108,7 +112,7 @@ function DashboardScreen() {
         style: { fontSize: 22, fontWeight: 800, color: '#1e293b', marginBottom: 24 }
       }, 'MD Dashboard'),
       React.createElement('div', {
-        style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }
+        style: { display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }
       },
         stats.map(s =>
           React.createElement('div', {
@@ -143,7 +147,11 @@ function ApprovalsScreen() {
 
   const priorityOrder = { urgent: 0, normal: 1, low: 2 };
 
-  const pendingIndents = state.indents
+  const isMD = user.role === 'md';
+  // A project manager cannot decide an indent they raised: those are listed but not selectable
+  const canDecide = (i) => !(user.role === 'project_manager' && i.createdBy === user.id);
+
+  const allPending = state.indents
     .filter(i => i.status === 'pending_approval')
     .sort((a, b) => {
       // Sort by priority first (urgent first)
@@ -152,6 +160,9 @@ function ApprovalsScreen() {
       // Then by hours pending (longest first = earliest created first)
       return new Date(a.createdAt) - new Date(b.createdAt);
     });
+  const list = useListControls(allPending, indentListFields(state));
+  const pendingIndents = list.rows;
+  const selectable = pendingIndents.filter(canDecide);
 
   const toggleSelect = (id) => {
     setSelected(prev =>
@@ -160,10 +171,10 @@ function ApprovalsScreen() {
   };
 
   const toggleAll = () => {
-    if (selected.length === pendingIndents.length) {
+    if (selected.length === selectable.length) {
       setSelected([]);
     } else {
-      setSelected(pendingIndents.map(i => i.id));
+      setSelected(selectable.map(i => i.id));
     }
   };
 
@@ -173,15 +184,7 @@ function ApprovalsScreen() {
       type: 'BULK_APPROVE',
       payload: { indentIds: selected, approvedBy: user.id }
     });
-    selected.forEach(indentId => {
-      dispatch({
-        type: 'LOG_ACTIVITY',
-        payload: {
-          indentId: indentId,
-          entry: createActivityLogEntry('Approved (bulk)', user.id)
-        }
-      });
-    });
+    dispatch({ type: 'SHOW_TOAST', payload: { message: selected.length + ' indent(s) approved', type: 'success' } });
     setSelected([]);
   };
 
@@ -198,9 +201,9 @@ function ApprovalsScreen() {
       style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }
     },
       React.createElement('h2', { style: { fontSize: 22, fontWeight: 800, color: '#1e293b' } },
-        'Pending Approvals (' + pendingIndents.length + ')'
+        'Pending Approvals (' + allPending.length + ')'
       ),
-      selected.length > 0 && React.createElement('button', {
+      !isMD && selected.length > 0 && React.createElement('button', {
         onClick: handleBulkApprove,
         style: {
           padding: '10px 20px', borderRadius: 8, border: 'none',
@@ -209,13 +212,18 @@ function ApprovalsScreen() {
       }, 'Approve Selected (' + selected.length + ')')
     ),
 
+    isMD && React.createElement('p', { style: { fontSize: 13, color: '#64748b', marginBottom: 12 } },
+      'Open an indent to approve, return or reject it. Remarks are required for every decision.'),
+
+    allPending.length > 0 && list.bar,
+
     pendingIndents.length === 0
       ? React.createElement('div', {
           style: {
             background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12,
             padding: 40, textAlign: 'center', color: '#94a3b8',
           }
-        }, React.createElement('p', { style: { fontSize: 16 } }, 'No pending indents'))
+        }, React.createElement('p', { style: { fontSize: 16 } }, allPending.length === 0 ? 'No pending indents' : 'No indents match your search'))
       : React.createElement('div', {
           style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }
         },
@@ -223,9 +231,9 @@ function ApprovalsScreen() {
             React.createElement('thead', null,
               React.createElement('tr', { style: { background: '#f8fafc' } },
                 React.createElement('th', { style: { padding: '12px 16px', textAlign: 'center', borderBottom: '2px solid #e2e8f0', width: 40 } },
-                  React.createElement('input', {
-                    type: 'checkbox',
-                    checked: selected.length === pendingIndents.length && pendingIndents.length > 0,
+                  !isMD && React.createElement('input', {
+                    type: 'checkbox', 'aria-label': 'Select all',
+                    checked: selected.length === selectable.length && selectable.length > 0,
                     onChange: toggleAll,
                   })
                 ),
@@ -248,14 +256,14 @@ function ApprovalsScreen() {
                   }
                 },
                   React.createElement('td', { style: { padding: '12px 16px', textAlign: 'center' } },
-                    React.createElement('input', {
-                      type: 'checkbox',
+                    (!isMD && canDecide(indent)) && React.createElement('input', {
+                      type: 'checkbox', 'aria-label': 'Select ' + getIndentDisplayId(indent, state.indents),
                       checked: selected.includes(indent.id),
                       onChange: () => toggleSelect(indent.id),
                     })
                   ),
                   React.createElement('td', { style: { padding: '12px 16px', fontWeight: 600 } },
-                    React.createElement('a', { href: '#approve-detail/' + indent.id, style: { color: '#6366f1', textDecoration: 'none', cursor: 'pointer' } }, getIndentDisplayId(indent, state.indents))
+                    React.createElement('a', { href: '#indent/' + indent.id, style: { color: '#6366f1', textDecoration: 'none', cursor: 'pointer' } }, getIndentDisplayId(indent, state.indents))
                   ),
                   React.createElement('td', { style: { padding: '12px 16px' } }, getSiteName(indent.siteId, state.sites)),
                   React.createElement('td', { style: { padding: '12px 16px' } }, React.createElement(PriorityBadge, { priority: indent.priority })),
@@ -264,12 +272,12 @@ function ApprovalsScreen() {
                   React.createElement('td', { style: { padding: '12px 16px' } }, (indent.lineItems || []).length),
                   React.createElement('td', { style: { padding: '12px 16px', textAlign: 'center' } },
                     React.createElement('a', {
-                      href: '#approve-detail/' + indent.id,
+                      href: '#indent/' + indent.id,
                       style: {
                         padding: '6px 14px', borderRadius: 6, background: '#eef2ff',
                         color: '#6366f1', fontSize: 12, fontWeight: 600, textDecoration: 'none',
                       }
-                    }, 'Review')
+                    }, canDecide(indent) ? 'Review' : 'View (with MD)')
                   )
                 )
               )
@@ -283,177 +291,8 @@ function ApprovalsScreen() {
 // 19. ApproveDetailScreen (unchanged)
 // ─────────────────────────────────────────────
 function ApproveDetailScreen({ indentId }) {
-  const [state, dispatch] = useContext(AppContext);
-  const indent = state.indents.find(i => i.id === indentId);
-  const user = state.currentUser;
-  const [rejectReason, setRejectReason] = useState('');
-  const [showRejectForm, setShowRejectForm] = useState(false);
-  const [showEscalateForm, setShowEscalateForm] = useState(false);
-  const [escalateRemarks, setEscalateRemarks] = useState('');
-
-  if (!indent) {
-    return React.createElement('div', { style: { padding: 32 } },
-      React.createElement('h2', null, 'Indent not found')
-    );
-  }
-
-  const handleApprove = () => {
-    dispatch({
-      type: 'APPROVE_INDENT',
-      payload: { indentId: indent.id, approvedBy: user.id }
-    });
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent approved', type: 'success' } });
-    window.location.hash = '#approvals';
-  };
-
-  const handleReject = () => {
-    if (!rejectReason.trim()) return;
-    dispatch({
-      type: 'REJECT_INDENT',
-      payload: { indentId: indent.id, rejectedBy: user.id, reason: rejectReason }
-    });
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent rejected', type: 'info' } });
-    window.location.hash = '#approvals';
-  };
-
-  const handleEscalate = () => {
-    dispatch({
-      type: 'ESCALATE_TO_MD',
-      payload: { indentId: indent.id, remarks: escalateRemarks, escalatedBy: user.id }
-    });
-    dispatch({
-      type: 'LOG_ACTIVITY',
-      payload: { indentId: indent.id, action: 'Escalated to MD', by: user.id, note: escalateRemarks || 'Escalated by PM' }
-    });
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent escalated to MD', type: 'success' } });
-    window.location.hash = '#approvals';
-  };
-
-  const handleReturnForRevision = () => {
-    if (!rejectReason.trim()) return;
-    dispatch({
-      type: 'REJECT_INDENT',
-      payload: { indentId: indent.id, rejectedBy: user.id, reason: rejectReason, returnForRevision: true }
-    });
-    dispatch({
-      type: 'LOG_ACTIVITY',
-      payload: { indentId: indent.id, action: 'Returned for Revision', by: user.id, note: rejectReason }
-    });
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent returned for revision', type: 'info' } });
-    window.location.hash = '#approvals';
-  };
-
-  return React.createElement('div', { style: { padding: 24, maxWidth: 900, margin: '0 auto' } },
-    React.createElement(IndentDetail, { indentId: indentId }),
-
-    indent.status === 'pending_approval' && React.createElement('div', {
-      style: {
-        background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12,
-        padding: 24, marginTop: 24,
-      }
-    },
-      React.createElement('h3', {
-        style: { fontSize: 16, fontWeight: 700, marginBottom: 16, color: '#1e293b' }
-      }, 'Approval Actions'),
-
-      !showRejectForm && !showEscalateForm
-        ? React.createElement('div', { style: { display: 'flex', gap: 12, flexWrap: 'wrap' } },
-            React.createElement('button', {
-              onClick: handleApprove,
-              style: {
-                padding: '10px 24px', borderRadius: 8, border: 'none',
-                background: '#16a34a', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer',
-              }
-            }, 'Approve'),
-            React.createElement('button', {
-              onClick: () => setShowRejectForm(true),
-              style: {
-                padding: '10px 24px', borderRadius: 8, border: 'none',
-                background: '#dc2626', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer',
-              }
-            }, 'Reject'),
-            user.role === 'project_manager' && React.createElement('button', {
-              onClick: () => setShowEscalateForm(true),
-              style: {
-                padding: '10px 24px', borderRadius: 8, border: 'none',
-                background: '#f59e0b', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer',
-              }
-            }, '⚡ Escalate to MD'),
-            React.createElement('button', {
-              onClick: () => { setShowRejectForm(true); },
-              style: {
-                padding: '10px 24px', borderRadius: 8, border: '1px solid #d97706',
-                background: '#fff', color: '#d97706', fontWeight: 700, fontSize: 14, cursor: 'pointer',
-              }
-            }, '↩ Return for Revision')
-          )
-        : showEscalateForm
-        ? React.createElement('div', null,
-            React.createElement('p', { style: { fontSize: 13, color: '#64748b', marginBottom: 8 } }, 'This will escalate the indent to the MD for review and approval.'),
-            React.createElement('textarea', {
-              value: escalateRemarks, onChange: e => setEscalateRemarks(e.target.value),
-              placeholder: 'Reason for escalation (optional)',
-              rows: 3,
-              style: {
-                width: '100%', padding: '10px 14px', borderRadius: 8,
-                border: '1px solid #d1d5db', fontSize: 13, marginBottom: 12,
-                boxSizing: 'border-box', resize: 'vertical',
-              }
-            }),
-            React.createElement('div', { style: { display: 'flex', gap: 8 } },
-              React.createElement('button', {
-                onClick: handleEscalate,
-                style: {
-                  padding: '8px 20px', borderRadius: 8, border: 'none',
-                  background: '#f59e0b', color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
-                }
-              }, 'Confirm Escalation'),
-              React.createElement('button', {
-                onClick: () => { setShowEscalateForm(false); setEscalateRemarks(''); },
-                style: {
-                  padding: '8px 20px', borderRadius: 8, border: '1px solid #d1d5db',
-                  background: '#fff', color: '#475569', fontWeight: 600, fontSize: 13, cursor: 'pointer',
-                }
-              }, 'Cancel')
-            )
-          )
-        : React.createElement('div', null,
-            React.createElement('textarea', {
-              value: rejectReason, onChange: e => setRejectReason(e.target.value),
-              placeholder: 'Reason for rejection / revision (required)',
-              rows: 3,
-              style: {
-                width: '100%', padding: '10px 14px', borderRadius: 8,
-                border: '1px solid #d1d5db', fontSize: 13, marginBottom: 12,
-                boxSizing: 'border-box', resize: 'vertical',
-              }
-            }),
-            React.createElement('div', { style: { display: 'flex', gap: 8 } },
-              React.createElement('button', {
-                onClick: handleReject,
-                style: {
-                  padding: '8px 20px', borderRadius: 8, border: 'none',
-                  background: '#dc2626', color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
-                }
-              }, 'Confirm Rejection'),
-              React.createElement('button', {
-                onClick: handleReturnForRevision,
-                style: {
-                  padding: '8px 20px', borderRadius: 8, border: 'none',
-                  background: '#d97706', color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
-                }
-              }, 'Return for Revision'),
-              React.createElement('button', {
-                onClick: () => { setShowRejectForm(false); setRejectReason(''); },
-                style: {
-                  padding: '8px 20px', borderRadius: 8, border: '1px solid #d1d5db',
-                  background: '#fff', color: '#475569', fontWeight: 600, fontSize: 13, cursor: 'pointer',
-                }
-              }, 'Cancel')
-            )
-          )
-    )
-  );
+  // Approve / return / reject / escalate are on the indent page itself
+  return React.createElement(IndentDetail, { indentId: indentId });
 }
 
 // ─────────────────────────────────────────────
@@ -461,12 +300,16 @@ function ApproveDetailScreen({ indentId }) {
 // ─────────────────────────────────────────────
 function ApprovedScreen() {
   const [state] = useContext(AppContext);
-  const approvedIndents = state.indents.filter(i => i.status === 'approved');
+  const allApproved = state.indents.filter(i => i.status === 'approved').sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const list = useListControls(allApproved, indentListFields(state));
+  const approvedIndents = list.rows;
 
   return React.createElement('div', { style: { padding: 24 } },
     React.createElement('h2', {
       style: { fontSize: 22, fontWeight: 800, color: '#1e293b', marginBottom: 24 }
-    }, 'Approved Indents (' + approvedIndents.length + ')'),
+    }, 'Approved Indents (' + allApproved.length + ')'),
+
+    allApproved.length > 0 && list.bar,
 
     approvedIndents.length === 0
       ? React.createElement('div', {
@@ -485,7 +328,8 @@ function ApprovedScreen() {
                 React.createElement('th', { style: { padding: '12px 16px', textAlign: 'left', borderBottom: '2px solid #e2e8f0', color: '#64748b', fontWeight: 700 } }, 'Site'),
                 React.createElement('th', { style: { padding: '12px 16px', textAlign: 'left', borderBottom: '2px solid #e2e8f0', color: '#64748b', fontWeight: 700 } }, 'Priority'),
                 React.createElement('th', { style: { padding: '12px 16px', textAlign: 'left', borderBottom: '2px solid #e2e8f0', color: '#64748b', fontWeight: 700 } }, 'Created By'),
-                React.createElement('th', { style: { padding: '12px 16px', textAlign: 'left', borderBottom: '2px solid #e2e8f0', color: '#64748b', fontWeight: 700 } }, 'Approved'),
+                React.createElement('th', { style: { padding: '12px 16px', textAlign: 'left', borderBottom: '2px solid #e2e8f0', color: '#64748b', fontWeight: 700 } }, 'Approved By'),
+                React.createElement('th', { style: { padding: '12px 16px', textAlign: 'left', borderBottom: '2px solid #e2e8f0', color: '#64748b', fontWeight: 700 } }, 'Created'),
               )
             ),
             React.createElement('tbody', null,
@@ -499,9 +343,8 @@ function ApprovedScreen() {
                   React.createElement('td', { style: { padding: '12px 16px' } }, getSiteName(indent.siteId, state.sites)),
                   React.createElement('td', { style: { padding: '12px 16px' } }, React.createElement(PriorityBadge, { priority: indent.priority })),
                   React.createElement('td', { style: { padding: '12px 16px' } }, getUserName(indent.createdBy, state.users)),
-                  React.createElement('td', { style: { padding: '12px 16px', color: '#64748b' } },
-                    indent.approvedAt ? new Date(indent.approvedAt).toLocaleDateString() : '-'
-                  )
+                  React.createElement('td', { style: { padding: '12px 16px' } }, indent.approvedBy ? getUserName(indent.approvedBy, state.users) : '-'),
+                  React.createElement('td', { style: { padding: '12px 16px', color: '#64748b' } }, new Date(indent.createdAt).toLocaleDateString())
                 )
               )
             )
@@ -522,7 +365,10 @@ function AllIndentsScreen() {
     dateFrom: '', dateTo: '',
   });
 
-  const filteredIndents = applyIndentFilters(state.indents, filters, state);
+  const filtered = applyIndentFilters(state.indents, filters, state)
+    .slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const list = useListControls(filtered, indentListFields(state));
+  const filteredIndents = list.rows;
 
   return React.createElement('div', { style: { padding: 24 } },
     React.createElement('h2', {
@@ -531,9 +377,7 @@ function AllIndentsScreen() {
 
     React.createElement(IndentFilterBar, { filters, setFilters }),
 
-    React.createElement('div', {
-      style: { marginBottom: 12, color: '#64748b', fontSize: 13 }
-    }, 'Showing ' + filteredIndents.length + ' of ' + state.indents.length + ' indents'),
+    list.bar,
 
     React.createElement('div', {
       style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }
@@ -559,9 +403,7 @@ function AllIndentsScreen() {
                 }, 'No indents match your filters')
               )
             : filteredIndents.map(indent => {
-                const indentRoute = (canApprove && indent.status === 'pending_approval')
-                  ? '#approve-detail/' + indent.id
-                  : '#indent/' + indent.id;
+                const indentRoute = '#indent/' + indent.id;
                 return React.createElement('tr', {
                   key: indent.id,
                   style: { borderBottom: '1px solid #f1f5f9', cursor: 'pointer' },
@@ -604,16 +446,6 @@ function IndentFilterBar({ filters, setFilters }) {
       display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end',
     }
   },
-    React.createElement('div', { style: { flex: '1 1 200px' } },
-      React.createElement('label', {
-        style: { display: 'block', fontSize: 11, fontWeight: 600, marginBottom: 4, color: '#64748b' }
-      }, 'Search'),
-      React.createElement('input', {
-        value: filters.search || '', onChange: e => update('search', e.target.value),
-        placeholder: 'Search ID, description...',
-        style: { ...inputStyle, width: '100%' },
-      })
-    ),
     React.createElement('div', { style: { flex: '0 0 140px' } },
       React.createElement('label', {
         style: { display: 'block', fontSize: 11, fontWeight: 600, marginBottom: 4, color: '#64748b' }
@@ -623,12 +455,9 @@ function IndentFilterBar({ filters, setFilters }) {
         style: { ...inputStyle, width: '100%' },
       },
         React.createElement('option', { value: '' }, 'All Statuses'),
-        React.createElement('option', { value: 'draft' }, 'Draft'),
-        React.createElement('option', { value: 'pending_approval' }, 'Submitted'),
-        React.createElement('option', { value: 'approved' }, 'Approved'),
-        React.createElement('option', { value: 'rejected' }, 'Rejected'),
-        React.createElement('option', { value: 'dispatched' }, 'Dispatched'),
-        React.createElement('option', { value: 'completed' }, 'Completed')
+        ['draft', 'pending_approval', 'approved', 'rejected', 'returned_for_revision', 'escalated_to_md',
+         'in_procurement', 'po_draft', 'pending_md_po_approval', 'po_approved', 'po_issued', 'dispatched', 'completed']
+          .map(st => React.createElement('option', { key: st, value: st }, statusLabel(st)))
       )
     ),
     React.createElement('div', { style: { flex: '0 0 120px' } },

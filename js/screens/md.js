@@ -9,9 +9,16 @@ function MDEscalationsScreen() {
     const [actionType, setActionType] = useState(null);
     const [mdRemarks, setMdRemarks] = useState('');
 
-    const escalatedIndents = state.indents.filter(i => i.status === 'escalated_to_md');
+    const allEscalated = state.indents.filter(i => i.status === 'escalated_to_md')
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    const list = useListControls(allEscalated, indentListFields(state));
+    const escalatedIndents = list.rows;
 
     const handleApprove = (indentId) => {
+        if (!mdRemarks.trim()) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide remarks', type: 'error' } });
+            return;
+        }
         dispatch({ type: 'MD_ESCALATION_APPROVE', payload: { indentId, remarks: mdRemarks } });
         dispatch({ type: 'SHOW_TOAST', payload: { message: 'Escalation approved - indent back in procurement', type: 'success' } });
         setActionIndentId(null);
@@ -31,10 +38,11 @@ function MDEscalationsScreen() {
 
     return React.createElement('div', { className: 'card' },
         React.createElement('div', { className: 'card-header' },
-            React.createElement('div', { className: 'card-title' }, 'Escalations from Procurement')
+            React.createElement('div', { className: 'card-title' }, 'Indents Escalated to MD (' + allEscalated.length + ')')
         ),
+        allEscalated.length > 0 ? React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, list.bar) : null,
         escalatedIndents.length === 0
-            ? React.createElement('div', { style: { textAlign: 'center', padding: '40px', color: '#64748b' } }, 'No pending escalations')
+            ? React.createElement('div', { style: { textAlign: 'center', padding: '40px', color: '#64748b' } }, allEscalated.length === 0 ? 'No pending escalations' : 'No indents match your search')
             : escalatedIndents.map(indent =>
                 React.createElement('div', { key: indent.id, style: { padding: '20px', borderBottom: '1px solid #e2e8f0' } },
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' } },
@@ -48,7 +56,7 @@ function MDEscalationsScreen() {
                     ),
                     indent.escalationRemarks
                         ? React.createElement('div', { className: 'alert alert-warning', style: { margin: '8px 0' } },
-                            React.createElement('strong', null, 'Procurement remarks: '), indent.escalationRemarks
+                            React.createElement('strong', null, (indent.escalatedBy ? getUserName(indent.escalatedBy, state.users) : 'Escalation') + ' remarks: '), indent.escalationRemarks
                         )
                         : null,
                     React.createElement('div', { style: { display: 'flex', gap: '8px', marginTop: '12px' } },
@@ -59,13 +67,14 @@ function MDEscalationsScreen() {
                         React.createElement('button', {
                             className: 'btn btn-sm btn-danger',
                             onClick: () => { setActionIndentId(indent.id); setActionType('dismiss'); setMdRemarks(''); }
-                        }, 'Dismiss - Return for Revision')
+                        }, 'Return for Revision'),
+                        React.createElement('a', { href: '#indent/' + indent.id, className: 'btn btn-sm btn-secondary', style: { textDecoration: 'none' } }, 'Open Indent')
                     ),
                     actionIndentId === indent.id
                         ? React.createElement('div', {
                             style: { marginTop: '12px', padding: '16px', backgroundColor: actionType === 'approve' ? '#f0fdf4' : '#fef2f2', borderRadius: '6px' }
                         },
-                            React.createElement('label', { className: 'form-label' }, 'MD Remarks'),
+                            React.createElement('label', { className: 'form-label' }, 'MD Remarks (required)'),
                             React.createElement('textarea', {
                                 className: 'form-textarea', value: mdRemarks,
                                 onChange: (e) => setMdRemarks(e.target.value),
@@ -77,7 +86,7 @@ function MDEscalationsScreen() {
                                     ? React.createElement('button', { className: 'btn btn-sm btn-success', onClick: () => handleApprove(indent.id) }, 'Confirm Approve')
                                     : null,
                                 actionType === 'dismiss'
-                                    ? React.createElement('button', { className: 'btn btn-sm btn-danger', onClick: () => handleDismiss(indent.id) }, 'Confirm Dismiss')
+                                    ? React.createElement('button', { className: 'btn btn-sm btn-danger', onClick: () => handleDismiss(indent.id) }, 'Confirm Return')
                                     : null,
                                 React.createElement('button', { className: 'btn btn-sm btn-secondary', onClick: () => setActionIndentId(null) }, 'Cancel')
                             )
@@ -97,11 +106,22 @@ function MDPOApprovalsScreen() {
     const [rejectPoId, setRejectPoId] = useState(null);
     const [rejectReason, setRejectReason] = useState('');
 
-    const pendingPOs = state.purchaseOrders.filter(po => po.status === 'pending_approval').sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    const [approvePoId, setApprovePoId] = useState(null);
+    const [approveRemarks, setApproveRemarks] = useState('');
+
+    const allPending = state.purchaseOrders.filter(po => po.status === 'pending_approval').sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    const list = useListControls(allPending, poListFields(state));
+    const pendingPOs = list.rows;
 
     const handleApprovePO = (poId) => {
-        dispatch({ type: 'MD_APPROVE_PO', payload: { poId } });
+        if (!approveRemarks.trim()) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide remarks for the approval', type: 'error' } });
+            return;
+        }
+        dispatch({ type: 'MD_APPROVE_PO', payload: { poId, remarks: approveRemarks.trim() } });
         dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO approved', type: 'success' } });
+        setApprovePoId(null);
+        setApproveRemarks('');
     };
 
     const handleRejectPO = (poId) => {
@@ -117,10 +137,11 @@ function MDPOApprovalsScreen() {
 
     return React.createElement('div', { className: 'card' },
         React.createElement('div', { className: 'card-header' },
-            React.createElement('div', { className: 'card-title' }, 'PO Approvals')
+            React.createElement('div', { className: 'card-title' }, 'PO Approvals (' + allPending.length + ')')
         ),
+        allPending.length > 0 ? React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, list.bar) : null,
         pendingPOs.length === 0
-            ? React.createElement('div', { style: { textAlign: 'center', padding: '40px', color: '#64748b' } }, 'No POs pending approval')
+            ? React.createElement('div', { style: { textAlign: 'center', padding: '40px', color: '#64748b' } }, allPending.length === 0 ? 'No POs pending approval' : 'No POs match your search')
             : pendingPOs.map(po => {
                 const itemSubtotal = (po.lineItems || []).reduce((s, item) => s + (item.amount || 0), 0);
                 const itemGstTotal = (po.lineItems || []).reduce((s, item) => s + (item.gstAmount || 0), 0);
@@ -128,13 +149,16 @@ function MDPOApprovalsScreen() {
                 return React.createElement('div', { key: po.id, style: { padding: '20px', borderBottom: '1px solid #e2e8f0' } },
                     React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: '16px' } },
                         React.createElement('div', null,
-                            React.createElement('div', { style: { fontSize: '16px', fontWeight: '600', color: '#1e293b' } }, getPODisplayId(po)),
+                            React.createElement('a', { href: '#po/' + po.id, style: { fontSize: '16px', fontWeight: '600', color: '#2563eb', textDecoration: 'none' } }, getPODisplayId(po)),
                             React.createElement('div', { style: { fontSize: '13px', color: '#64748b', marginTop: '4px' } },
                                 'Indent: ',
                                 React.createElement('a', { href: '#indent/' + po.indentId, style: { color: '#2563eb' } }, getIndentDisplayId((state.indents || []).find(function(i) { return i.id === po.indentId; }) || { id: po.indentId }, state.indents)),
                                 ' | Vendor: ' + po.vendorName,
-                                po.paymentTerms ? ' | Terms: ' + po.paymentTerms : ''
-                            )
+                                po.paymentTerms ? ' | Terms: ' + po.paymentTerms : '',
+                                po.deliveryDate ? ' | Delivery: ' + new Date(po.deliveryDate).toLocaleDateString('en-IN') : '',
+                                ' | Raised by: ' + getUserName(po.createdBy, state.users)
+                            ),
+                            po.notes ? React.createElement('div', { style: { fontSize: '13px', color: '#334155', marginTop: '4px' } }, 'Procurement remarks: ' + po.notes) : null
                         ),
                         React.createElement('div', { style: { fontSize: '20px', fontWeight: '700', color: '#15803d' } },
                             'Rs. ' + (po.totalAmount || 0).toLocaleString()
@@ -178,13 +202,30 @@ function MDPOApprovalsScreen() {
                     ),
 
                     React.createElement('div', { style: { display: 'flex', gap: '8px' } },
-                        React.createElement('button', { className: 'btn btn-success', onClick: () => handleApprovePO(po.id) }, 'Approve PO'),
-                        React.createElement('button', { className: 'btn btn-danger', onClick: () => setRejectPoId(rejectPoId === po.id ? null : po.id) }, 'Reject PO')
+                        React.createElement('button', { className: 'btn btn-success', onClick: () => { setApprovePoId(approvePoId === po.id ? null : po.id); setApproveRemarks(''); setRejectPoId(null); } }, 'Approve PO'),
+                        React.createElement('button', { className: 'btn btn-danger', onClick: () => { setRejectPoId(rejectPoId === po.id ? null : po.id); setRejectReason(''); setApprovePoId(null); } }, 'Reject PO'),
+                        React.createElement('a', { href: '#po/' + po.id, className: 'btn btn-secondary', style: { textDecoration: 'none' } }, 'Open PO')
                     ),
+
+                    approvePoId === po.id
+                        ? React.createElement('div', { style: { marginTop: '12px', padding: '16px', backgroundColor: '#f0fdf4', borderRadius: '6px' } },
+                            React.createElement('label', { className: 'form-label' }, 'MD Remarks (required)'),
+                            React.createElement('textarea', {
+                                className: 'form-textarea', value: approveRemarks,
+                                onChange: (e) => setApproveRemarks(e.target.value),
+                                placeholder: 'Why this PO is approved...',
+                                style: { minHeight: '60px' }
+                            }),
+                            React.createElement('div', { style: { marginTop: '8px', display: 'flex', gap: '8px' } },
+                                React.createElement('button', { className: 'btn btn-sm btn-success', onClick: () => handleApprovePO(po.id) }, 'Confirm Approve'),
+                                React.createElement('button', { className: 'btn btn-sm btn-secondary', onClick: () => { setApprovePoId(null); setApproveRemarks(''); } }, 'Cancel')
+                            )
+                        )
+                        : null,
 
                     rejectPoId === po.id
                         ? React.createElement('div', { style: { marginTop: '12px', padding: '16px', backgroundColor: '#fef2f2', borderRadius: '6px' } },
-                            React.createElement('label', { className: 'form-label' }, 'Rejection Reason'),
+                            React.createElement('label', { className: 'form-label' }, 'Rejection Reason (required)'),
                             React.createElement('textarea', {
                                 className: 'form-textarea', value: rejectReason,
                                 onChange: (e) => setRejectReason(e.target.value),

@@ -521,6 +521,15 @@
             background-color: #1d4ed8;
         }
 
+        .btn-warning {
+            background-color: #f59e0b;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background-color: #d97706;
+        }
+
         .btn-secondary {
             background-color: #e2e8f0;
             color: #1e293b;
@@ -961,7 +970,7 @@
 
         /* Print styles */
         @media print {
-            .sidebar, .navbar, .btn, .action-buttons, .bulk-action-bar, .tab-bar {
+            .sidebar, .navbar, .btn, .action-buttons, .bulk-action-bar, .tab-bar, .list-controls, .no-print {
                 display: none !important;
             }
             .main-container, .content-area {

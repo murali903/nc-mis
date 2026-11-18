@@ -7,7 +7,15 @@ function OfficeManagementScreen() {
     var _ctx = useContext(AppContext);
     var state = _ctx[0];
     var dispatch = _ctx[1];
-    var offices = state.offices || [];
+    var allOffices = state.offices || [];
+    var officeList = useListControls(allOffices, [
+        { key: 'name', label: 'Name', get: function(o) { return o.name; } },
+        { key: 'city', label: 'City', get: function(o) { return o.city; } },
+        { key: 'state', label: 'State', get: function(o) { return o.state; } },
+        { key: 'gstin', label: 'GSTIN', get: function(o) { return o.gstin; } },
+        { key: 'contact', label: 'Phone / email', get: function(o) { return [o.phone, o.email]; } },
+    ], { placeholder: 'Search office name, city, GSTIN…' });
+    var offices = officeList.rows;
 
     var _showForm = useState(false);
     var showForm = _showForm[0];
@@ -106,6 +114,7 @@ function OfficeManagementScreen() {
         ),
         showForm && renderForm(false),
         editingId && renderForm(true),
+        React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, officeList.bar),
         React.createElement('table', { className: 'table' },
             React.createElement('thead', null,
                 React.createElement('tr', null,

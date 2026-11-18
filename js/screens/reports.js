@@ -31,13 +31,17 @@ function CompletedOrdersScreen() {
     }
 
     const allCompleted = completedIndents;
-    completedIndents = applyIndentFilters(completedIndents, filters);
+    const completedList = useListControls(
+        applyIndentFilters(completedIndents, filters).slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
+        indentListFields(state));
+    completedIndents = completedList.rows;
 
     return React.createElement('div', null,
         React.createElement(IndentFilterBar, {
             sites: state.sites, users: state.users, filters, setFilters,
             totalCount: allCompleted.length, filteredCount: completedIndents.length
         }),
+        completedList.bar,
         React.createElement('div', { className: 'card' },
             React.createElement('div', { className: 'card-header' },
                 React.createElement('div', { className: 'card-title' }, 'Completed Orders')

@@ -10,6 +10,12 @@ function SitesScreen() {
   const [officeId, setOfficeId] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [deleteError, setDeleteError] = useState('');
+  const siteList = useListControls(state.sites, [
+    { key: 'name', label: 'Site name', get: s => s.name },
+    { key: 'location', label: 'Location', get: s => s.location },
+    { key: 'office', label: 'Office', get: s => { const o = (state.offices || []).find(x => x.id === s.officeId); return o ? o.name : ''; } },
+    { key: 'indents', label: 'Number of indents', type: 'number', noSearch: true, get: s => state.indents.filter(i => i.siteId === s.id).length },
+  ], { placeholder: 'Search site name, location or office…' });
 
   const resetForm = () => {
     setName(''); setLocation(''); setOfficeId('');
@@ -148,6 +154,8 @@ function SitesScreen() {
       )
     ),
 
+    siteList.bar,
+
     // Sites table
     React.createElement('div', {
       style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }
@@ -162,7 +170,7 @@ function SitesScreen() {
           )
         ),
         React.createElement('tbody', null,
-          state.sites.map(site => {
+          siteList.rows.map(site => {
             const indentCount = state.indents.filter(i => i.siteId === site.id).length;
             return React.createElement('tr', {
               key: site.id,

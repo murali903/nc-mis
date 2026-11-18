@@ -333,6 +333,7 @@ function Sidebar() {
       { label: '📦 Expected Deliveries', hash: '#store-expected' },
       { label: '📥 Pending Receipt', hash: '#store-pending' },
       { label: '➕ New Indent', hash: '#store-new-indent' },
+      { label: '📝 My Indents', hash: '#my-indents' },
       { label: '📜 History', hash: '#store-history' },
       { label: '📋 GRN History', hash: '#store-grn-history' },
       { label: '📋 All Indents', hash: '#store-all' },
@@ -340,6 +341,7 @@ function Sidebar() {
     project_manager: [
       { label: '📊 Dashboard', hash: '#dashboard' },
       { label: '➕ New Indent', hash: '#pm-create-indent' },
+      { label: '📝 My Indents', hash: '#my-indents' },
       { label: '⏳ Pending Approval', hash: '#approvals' },
       { label: '✅ Approved', hash: '#approved' },
       { label: '📋 All Indents', hash: '#all-indents' },
@@ -358,9 +360,11 @@ function Sidebar() {
     ],
     md: [
       { label: '📊 Dashboard', hash: '#dashboard' },
+      { label: '⏳ Indent Approvals', hash: '#approvals' },
       { label: '⚡ Escalations', hash: '#md-escalations' },
-      { label: '📋 All Indents', hash: '#all-indents' },
       { label: '📦 PO Approvals', hash: '#md-po-approvals' },
+      { label: '📋 All Indents', hash: '#all-indents' },
+      { label: '🧾 All Purchase Orders', hash: '#procurement-pos' },
       { label: '📈 Reports', hash: '#md-reports' },
     ],
   };

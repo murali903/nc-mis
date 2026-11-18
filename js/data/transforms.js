@@ -88,6 +88,8 @@ function transformIndent(row) {
         rejectionReason: row.rejection_reason || undefined,
         returnReason: row.return_reason || undefined,
         escalationRemarks: row.escalation_remarks || undefined,
+        escalatedBy: row.escalated_by || undefined,
+        approvedBy: row.approved_by || undefined,
         mdRemarks: row.md_remarks || undefined,
         mdEscalationResult: row.md_escalation_result || undefined,
         linkedPO: row.linked_po || undefined,
@@ -136,6 +138,7 @@ function transformIndent(row) {
                 uploadedAt: d.uploaded_at || d.created_at || '',
                 size: d.size || 0,
                 mimeType: d.mime_type || '',
+                lineItemId: d.line_item_id || null,
             };
         }),
     };
@@ -195,6 +198,9 @@ function transformPO(row) {
         notes: row.notes || '',
         officeId: row.office_id || '',
         remarks: row.remarks || '',
+        mdRemarks: row.md_remarks || '',
+        closeRemarks: row.close_remarks || '',
+        approvalRoute: row.approval_route || '',
         vendorName: row.vendor_name || '',
         totalAmount: Number(row.total_amount) || 0,
         lineItems: (row.po_line_items || []).slice().sort(function(a, b) {

@@ -5,7 +5,11 @@
 function MyIndentsScreen() {
   const [state] = useContext(AppContext);
   const user = state.currentUser;
-  const myIndents = state.indents.filter(i => i.createdBy === user.id).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const mine = state.indents.filter(i => i.createdBy === user.id).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const list = useListControls(mine, indentListFields(state));
+  const myIndents = list.rows;
+  const createHash = user.role === 'project_manager' ? '#pm-create-indent' : (user.role === 'storekeeper' ? '#store-new-indent' : '#create-indent');
+  const needAction = mine.filter(i => i.status === 'rejected' || i.status === 'returned_for_revision').length;
 
   return React.createElement('div', { style: { padding: 24 } },
     React.createElement('div', {
@@ -13,7 +17,7 @@ function MyIndentsScreen() {
     },
       React.createElement('h2', { style: { fontSize: 22, fontWeight: 800, color: '#1e293b' } }, 'My Indents'),
       React.createElement('a', {
-        href: '#create-indent',
+        href: createHash,
         style: {
           padding: '10px 20px', borderRadius: 8, background: '#6366f1',
           color: '#fff', fontWeight: 600, fontSize: 14, textDecoration: 'none',
@@ -21,7 +25,13 @@ function MyIndentsScreen() {
       }, '+ New Indent')
     ),
 
-    myIndents.length === 0
+    needAction > 0 && React.createElement('div', {
+      style: { background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 8, padding: '10px 16px', marginBottom: 12, fontSize: 13, color: '#9a3412', fontWeight: 600 }
+    }, needAction + (needAction === 1 ? ' indent was' : ' indents were') + ' returned or rejected and ' + (needAction === 1 ? 'needs' : 'need') + ' your revision.'),
+
+    mine.length > 0 && list.bar,
+
+    mine.length === 0
       ? React.createElement('div', {
           style: {
             background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12,
@@ -29,7 +39,7 @@ function MyIndentsScreen() {
           }
         },
           React.createElement('p', { style: { fontSize: 16, marginBottom: 8 } }, 'No indents yet'),
-          React.createElement('a', { href: '#create-indent', style: { color: '#6366f1', fontWeight: 600 } }, 'Create your first indent')
+          React.createElement('a', { href: createHash, style: { color: '#6366f1', fontWeight: 600 } }, 'Create your first indent')
         )
       : React.createElement('div', {
           style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }
@@ -47,6 +57,8 @@ function MyIndentsScreen() {
               )
             ),
             React.createElement('tbody', null,
+              myIndents.length === 0 && React.createElement('tr', null,
+                React.createElement('td', { colSpan: 7, style: { padding: 32, textAlign: 'center', color: '#94a3b8' } }, 'No indents match your search')),
               myIndents.map(indent =>
                 React.createElement('tr', {
                   key: indent.id,
@@ -100,6 +112,8 @@ function CreateIndentScreen() {
   const [requiredDate, setRequiredDate] = useState('');
   const [remarks, setRemarks] = useState('');
   const [items, setItems] = useState([{ boqId: '', name: '', description: '', qty: '', unit: '', remarks: '', isBoqItem: false, boqReference: '' }]);
+  const [attachments, setAttachments] = useState([]);
+  const [uploading, setUploading] = useState(false);
 
   const addItem = () => {
     setItems([...items, { boqId: '', name: '', description: '', qty: '', unit: '', remarks: '', isBoqItem: false, boqReference: '' }]);
@@ -199,6 +213,11 @@ function CreateIndentScreen() {
 
     isSubmittingIndent.current = true;
 
+    // A file attached to "Item N" follows that item (by its position on the form)
+    const validWithIndex = validItems.map(function(vi) { return { item: vi, formIndex: items.indexOf(vi), id: genUUID() }; });
+    const idByFormIndex = {};
+    validWithIndex.forEach(function(v) { idByFormIndex[v.formIndex] = v.id; });
+
     const indent = {
       id: genUUID(),
       siteId: siteId,
@@ -208,8 +227,8 @@ function CreateIndentScreen() {
       priority: priority,
       requiredDate: requiredDate || null,
       remarks: remarks,
-      lineItems: validItems.map((i, idx) => ({
-        id: genUUID(),
+      lineItems: validWithIndex.map(({ item: i, id }) => ({
+        id: id,
         boqId: i.boqId || null,
         name: i.name || i.description,
         description: i.description || i.name,
@@ -228,19 +247,27 @@ function CreateIndentScreen() {
       )],
     };
 
-    dispatch({ type: 'CREATE_INDENT', payload: indent });
+    const finish = function(docs) {
+      indent.documents = docs.map(function(d) { d.uploadedBy = user.id; return d; });
+      dispatch({ type: 'CREATE_INDENT', payload: indent });
+      dispatch({ type: 'SHOW_TOAST', payload: { message: status === 'pending_approval' ? 'Indent submitted for approval' : 'Draft saved', type: 'success' } });
+      window.location.hash = '#my-indents';
+      setTimeout(function() { isSubmittingIndent.current = false; }, 2000);
+    };
 
-    if (status === 'pending_approval') {
-      dispatch({
-        type: 'LOG_ACTIVITY',
-        payload: { indentId: indent.id, entry: createActivityLogEntry('Submitted for Approval', user.id) }
-      });
-    }
+    if (attachments.length === 0) { finish([]); return; }
 
-    window.location.hash = user.role === 'project_manager' ? '#all-indents' : '#my-indents';
-
-    // Reset submit lock after a delay (allows navigation to complete)
-    setTimeout(function() { isSubmittingIndent.current = false; }, 2000);
+    // Upload the files first; the indent is saved only if every upload worked
+    setUploading(true);
+    const lineIds = items.map(function(_, formIndex) { return idByFormIndex[formIndex] || null; });
+    uploadPickedFiles(indent.id, attachments, lineIds).then(function(docs) {
+      setUploading(false);
+      finish(docs);
+    }).catch(function(err) {
+      setUploading(false);
+      isSubmittingIndent.current = false;
+      dispatch({ type: 'SHOW_TOAST', payload: { message: (err.message || 'Could not upload the attachments') + '. The indent was not saved.', type: 'error' } });
+    });
   };
 
   const inputStyle = {
@@ -387,26 +414,7 @@ function CreateIndentScreen() {
                 value: item.unit || '', onChange: function(e) { updateItem(idx, 'unit', e.target.value); },
                 style: inputStyle,
               },
-                React.createElement('option', { value: '' }, 'Select unit...'),
-                React.createElement('option', { value: 'Bags' }, 'Bags'),
-                React.createElement('option', { value: 'MT' }, 'MT (Metric Ton)'),
-                React.createElement('option', { value: 'Kg' }, 'Kg'),
-                React.createElement('option', { value: 'Cu.M' }, 'Cu.M (Cubic Meter)'),
-                React.createElement('option', { value: 'Sqm' }, 'Sqm (Square Meter)'),
-                React.createElement('option', { value: 'Rmt' }, 'Rmt (Running Meter)'),
-                React.createElement('option', { value: 'Nos' }, 'Nos (Numbers)'),
-                React.createElement('option', { value: 'Ltrs' }, 'Ltrs (Litres)'),
-                React.createElement('option', { value: 'Bag' }, 'Bag'),
-                React.createElement('option', { value: 'Set' }, 'Set'),
-                React.createElement('option', { value: 'Pair' }, 'Pair'),
-                React.createElement('option', { value: 'Box' }, 'Box'),
-                React.createElement('option', { value: 'Roll' }, 'Roll'),
-                React.createElement('option', { value: 'Bundle' }, 'Bundle'),
-                React.createElement('option', { value: 'Feet' }, 'Feet'),
-                React.createElement('option', { value: 'Inch' }, 'Inch'),
-                React.createElement('option', { value: 'Trip' }, 'Trip'),
-                React.createElement('option', { value: 'Load' }, 'Load'),
-                React.createElement('option', { value: 'LS' }, 'LS (Lump Sum)')
+                unitOptionElements(item.unit)
               )
             ),
             React.createElement('div', null,
@@ -449,17 +457,20 @@ function CreateIndentScreen() {
       })
     ),
 
+    React.createElement(AttachmentPicker, { files: attachments, setFiles: setAttachments, items: items }),
+
     // Action buttons
-    React.createElement('div', { style: { display: 'flex', gap: 12, justifyContent: 'flex-end' } },
+    React.createElement('div', { style: { display: 'flex', gap: 12, justifyContent: 'flex-end', alignItems: 'center' } },
+      uploading && React.createElement('span', { style: { fontSize: 13, color: '#64748b' } }, 'Uploading attachments...'),
       React.createElement('button', {
-        onClick: () => handleSubmit('draft'),
+        onClick: () => handleSubmit('draft'), disabled: uploading,
         style: {
           padding: '10px 24px', borderRadius: 8, border: '1px solid #d1d5db',
           background: '#fff', color: '#475569', fontWeight: 600, fontSize: 14, cursor: 'pointer',
         }
       }, 'Save as Draft'),
       React.createElement('button', {
-        onClick: () => handleSubmit('pending_approval'),
+        onClick: () => handleSubmit('pending_approval'), disabled: uploading,
         style: {
           padding: '10px 24px', borderRadius: 8, border: 'none',
           background: '#6366f1', color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer',
@@ -505,8 +516,15 @@ function ReviseIndentScreen({ indentId }) {
   };
 
   const handleSubmit = () => {
-    const validItems = items.filter(i => i.description && i.qty);
-    if (validItems.length === 0) return;
+    const validItems = items.filter(i => i.description && i.qty && parseFloat(i.qty) > 0);
+    if (validItems.length === 0) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Add at least one item with a description and a quantity', type: 'error' } });
+      return;
+    }
+    if (validItems.some(i => !i.unit)) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Select a unit for every item', type: 'error' } });
+      return;
+    }
 
     dispatch({
       type: 'REVISE_RESUBMIT',
@@ -542,9 +560,12 @@ function ReviseIndentScreen({ indentId }) {
     }, indent.status === 'returned_for_revision'
       ? 'This indent was returned for revision. Please update and resubmit.'
       : 'This indent was rejected. Please revise and resubmit.'),
-    indent.rejectionReason && React.createElement('p', {
+    (indent.mdEscalationResult === 'dismissed' && indent.mdRemarks) ? React.createElement('p', {
       style: { color: '#64748b', fontSize: 13, marginBottom: 16, fontStyle: 'italic' }
-    }, 'Reason: ' + indent.rejectionReason),
+    }, 'MD remarks: ' + indent.mdRemarks)
+    : ((indent.returnReason || indent.rejectionReason) && React.createElement('p', {
+      style: { color: '#64748b', fontSize: 13, marginBottom: 16, fontStyle: 'italic' }
+    }, 'Reason: ' + (indent.status === 'returned_for_revision' ? (indent.returnReason || indent.rejectionReason) : indent.rejectionReason))),
 
     React.createElement('div', {
       style: {
@@ -612,10 +633,10 @@ function ReviseIndentScreen({ indentId }) {
           ),
           React.createElement('div', null,
             idx === 0 && React.createElement('label', { style: labelStyle }, 'Unit'),
-            React.createElement('input', {
-              value: item.unit, onChange: e => updateItem(idx, 'unit', e.target.value),
-              style: inputStyle,
-            })
+            React.createElement('select', {
+              value: item.unit || '', onChange: e => updateItem(idx, 'unit', e.target.value),
+              style: inputStyle, 'aria-label': 'Unit',
+            }, unitOptionElements(item.unit))
           ),
           React.createElement('div', null,
             idx === 0 && React.createElement('label', { style: labelStyle }, 'Remarks'),
@@ -637,6 +658,9 @@ function ReviseIndentScreen({ indentId }) {
         )
       )
     ),
+
+    React.createElement('div', { style: { marginBottom: 24 } },
+      React.createElement(DocumentsSection, { indent: indent, embedded: true })),
 
     React.createElement('div', { style: { display: 'flex', gap: 12, justifyContent: 'flex-end' } },
       React.createElement('button', {
@@ -693,8 +717,15 @@ function EditDraftScreen({ indentId }) {
   };
 
   const handleSave = (status) => {
-    const validItems = items.filter(i => i.description && i.qty);
-    if (validItems.length === 0) return;
+    const validItems = items.filter(i => i.description && i.qty && parseFloat(i.qty) > 0);
+    if (validItems.length === 0) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Add at least one item with a description and a quantity', type: 'error' } });
+      return;
+    }
+    if (status === 'pending_approval' && validItems.some(i => !i.unit)) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Select a unit for every item', type: 'error' } });
+      return;
+    }
 
     dispatch({
       type: 'UPDATE_DRAFT',
@@ -707,16 +738,7 @@ function EditDraftScreen({ indentId }) {
       }
     });
 
-    if (status === 'pending_approval') {
-      dispatch({
-        type: 'LOG_ACTIVITY',
-        payload: {
-          indentId: indent.id,
-          entry: createActivityLogEntry('Submitted for Approval', user.id)
-        }
-      });
-    }
-
+    dispatch({ type: 'SHOW_TOAST', payload: { message: status === 'pending_approval' ? 'Indent submitted for approval' : 'Draft saved', type: 'success' } });
     window.location.hash = '#my-indents';
   };
 
@@ -729,7 +751,7 @@ function EditDraftScreen({ indentId }) {
   return React.createElement('div', { style: { padding: 24, maxWidth: 900, margin: '0 auto' } },
     React.createElement('h2', {
       style: { fontSize: 22, fontWeight: 800, color: '#1e293b', marginBottom: 24 }
-    }, 'Edit Draft: ' + indent.id),
+    }, 'Edit Draft: ' + getIndentDisplayId(indent, state.indents)),
 
     React.createElement('div', {
       style: {
@@ -797,10 +819,10 @@ function EditDraftScreen({ indentId }) {
           ),
           React.createElement('div', null,
             idx === 0 && React.createElement('label', { style: labelStyle }, 'Unit'),
-            React.createElement('input', {
-              value: item.unit, onChange: e => updateItem(idx, 'unit', e.target.value),
-              style: inputStyle,
-            })
+            React.createElement('select', {
+              value: item.unit || '', onChange: e => updateItem(idx, 'unit', e.target.value),
+              style: inputStyle, 'aria-label': 'Unit',
+            }, unitOptionElements(item.unit))
           ),
           React.createElement('div', null,
             idx === 0 && React.createElement('label', { style: labelStyle }, 'Remarks'),
@@ -822,6 +844,9 @@ function EditDraftScreen({ indentId }) {
         )
       )
     ),
+
+    React.createElement('div', { style: { marginBottom: 24 } },
+      React.createElement(DocumentsSection, { indent: indent, embedded: true })),
 
     React.createElement('div', { style: { display: 'flex', gap: 12, justifyContent: 'flex-end' } },
       React.createElement('button', {

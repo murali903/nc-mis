@@ -139,17 +139,20 @@ function StoreExpectedDeliveriesScreen() {
     var storePOs = getStorePOs(state);
     var today = new Date().toISOString().split('T')[0];
 
-    var expectedPOs = storePOs.filter(function(po) {
+    var allExpected = storePOs.filter(function(po) {
         return po.status === 'issued' || po.status === 'partially_fulfilled';
     }).sort(function(a, b) {
         return (a.deliveryDate || '9999').localeCompare(b.deliveryDate || '9999');
     });
+    var expectedList = useListControls(allExpected, poListFields(state));
+    var expectedPOs = expectedList.rows;
 
     return React.createElement('div', { className: 'card' },
         React.createElement('div', { className: 'card-header' },
             React.createElement('div', { className: 'card-title' }, 'Expected Deliveries'),
-            React.createElement('span', { style: { fontSize: '13px', color: '#64748b' } }, expectedPOs.length + ' pending')
+            React.createElement('span', { style: { fontSize: '13px', color: '#64748b' } }, 'Purchase orders issued to vendors — goods on the way')
         ),
+        React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, expectedList.bar),
         React.createElement('table', { className: 'table' },
             React.createElement('thead', null,
                 React.createElement('tr', null,
@@ -206,17 +209,31 @@ function StoreGRNHistoryScreen() {
     var storePOs = getStorePOs(state);
     var storePOIds = storePOs.map(function(po) { return po.id; });
 
-    var storeGrns = (state.grns || []).filter(function(g) {
+    var allStoreGrns = (state.grns || []).filter(function(g) {
         return storePOIds.includes(g.poId);
     }).sort(function(a, b) {
         return (b.createdAt || b.receivedAt || '').localeCompare(a.createdAt || a.receivedAt || '');
     });
+    var poOfGrn = function(g) { return storePOs.find(function(po) { return po.id === g.poId; }); };
+    var grnList = useListControls(allStoreGrns, [
+        { key: 'number', label: 'GRN number', get: function(g) { return g.grnNumber || ''; } },
+        { key: 'po', label: 'PO number', get: function(g) { var po = poOfGrn(g); return po ? getPODisplayId(po) : ''; } },
+        { key: 'date', label: 'Date', type: 'date', get: function(g) { return g.createdAt || g.receivedAt; } },
+        { key: 'vendor', label: 'Vendor', get: function(g) { var po = poOfGrn(g); return po ? (po.vendorName || '') : ''; } },
+        { key: 'by', label: 'Received by', get: function(g) { return getUserName(g.receivedBy, state.users); } },
+        { key: 'items', label: 'Number of items', type: 'number', noSearch: true, get: function(g) { return (g.items || []).length; } },
+        { key: 'desc', label: 'Description', get: function(g) {
+            var po = poOfGrn(g);
+            return [g.remarks].concat(po ? (po.lineItems || []).map(function(l) { return l.description; }) : []);
+          } },
+    ]);
+    var storeGrns = grnList.rows;
 
     return React.createElement('div', { className: 'card' },
         React.createElement('div', { className: 'card-header' },
-            React.createElement('div', { className: 'card-title' }, 'GRN History'),
-            React.createElement('span', { style: { fontSize: '13px', color: '#64748b' } }, storeGrns.length + ' records')
+            React.createElement('div', { className: 'card-title' }, 'GRN History')
         ),
+        React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, grnList.bar),
         React.createElement('table', { className: 'table' },
             React.createElement('thead', null,
                 React.createElement('tr', null,
@@ -277,16 +294,24 @@ function StorePendingScreen() {
     const storeKeeperSites = getUserSites(state.currentUserId, state.sites, state.siteAssignments);
     const siteIds = storeKeeperSites.map(s => s.id);
 
-    const pendingIndents = state.indents.filter(i => {
+    const allPendingReceipt = state.indents.filter(i => {
         if (!siteIds.includes(i.siteId)) return false;
         if (!['approved', 'in_procurement', 'dispatched'].includes(i.status)) return false;
         return i.lineItems.some(li => li.received < li.qty);
+    }).sort((a, b) => {
+        // Dispatched (on its way) first, then newest
+        const d = (a.status === 'dispatched' ? 0 : 1) - (b.status === 'dispatched' ? 0 : 1);
+        return d !== 0 ? d : new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
     });
+    const pendingList = useListControls(allPendingReceipt, indentListFields(state));
+    const pendingIndents = pendingList.rows;
 
     return React.createElement('div', { className: 'card' },
         React.createElement('div', { className: 'card-header' },
-            React.createElement('div', { className: 'card-title' }, 'Pending Receipt')
+            React.createElement('div', { className: 'card-title' }, 'Pending Receipt'),
+            React.createElement('span', { style: { fontSize: '13px', color: '#64748b' } }, 'Indents for your site where material is still to be received without a PO')
         ),
+        React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, pendingList.bar),
         React.createElement('table', { className: 'table' },
             React.createElement('thead', null,
                 React.createElement('tr', null,
@@ -337,17 +362,19 @@ function StoreNewIndentScreen() {
     const [notes, setNotes] = useState('');
     const [requiredDate, setRequiredDate] = useState('');
     const [priority, setPriority] = useState('normal');
-    const [lineItems, setLineItems] = useState([{
-        id: 'li-new-1', description: '', qty: '', unit: 'bags', priority: 'medium',
+    const [lineItems, setLineItems] = useState(() => [{
+        id: genUUID(), description: '', qty: '', unit: 'Bags', priority: 'medium',
         isBoq: true, boqItemId: '', nonBoqReason: '', clientApproval: false, trackCostImpact: false
     }]);
+    const [attachments, setAttachments] = useState([]);
+    const [uploading, setUploading] = useState(false);
 
     const boqItems = state.boqLists[selectedSite] || [];
 
     const handleAddLineItem = () => {
         const newId = genUUID();
         setLineItems([...lineItems, {
-            id: newId, description: '', qty: '', unit: 'bags', priority: 'medium',
+            id: newId, description: '', qty: '', unit: 'Bags', priority: 'medium',
             isBoq: true, boqItemId: '', nonBoqReason: '', clientApproval: false, trackCostImpact: false
         }]);
     };
@@ -386,7 +413,7 @@ function StoreNewIndentScreen() {
             description: description,
             notes: notes,
             lineItems: lineItems.map(li => ({
-                id: li.id, description: li.description, qty: parseInt(li.qty), unit: li.unit, received: 0, priority: li.priority,
+                id: li.id, description: li.description, qty: parseFloat(li.qty), unit: li.unit, received: 0, priority: li.priority,
                 isBoq: li.isBoq, boqItemId: li.boqItemId || undefined, nonBoqReason: li.nonBoqReason || undefined,
                 clientApproval: li.clientApproval || false, trackCostImpact: li.trackCostImpact || false,
             })),
@@ -399,14 +426,14 @@ function StoreNewIndentScreen() {
         if (!selectedSite) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Site is required', type: 'error' } }); return; }
         if (!description.trim()) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Description is required', type: 'error' } }); return; }
         if (lineItems.some(li => !li.description.trim() || !li.qty)) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'All line items must have description and quantity', type: 'error' } }); return; }
-        if (lineItems.some(li => parseInt(li.qty) <= 0 || li.qty === '')) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'All items must have a quantity of 1 or more', type: 'error' } }); return; }
+        if (lineItems.some(li => parseFloat(li.qty) <= 0 || li.qty === '')) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'All items must have a quantity above zero', type: 'error' } }); return; }
         if (lineItems.some(li => !li.isBoq && !li.nonBoqReason.trim())) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Non-BOQ items require a reason', type: 'error' } }); return; }
 
         var invalidItems = lineItems.filter(function(li) {
             if (li.isBoq && !li.boqItemId) return true;
             if (!li.isBoq && (!li.description || !li.description.trim())) return true;
             if (!li.unit) return true;
-            if (!li.qty || parseInt(li.qty) <= 0) return true;
+            if (!li.qty || parseFloat(li.qty) <= 0) return true;
             return false;
         });
         if (invalidItems.length > 0) {
@@ -414,21 +441,35 @@ function StoreNewIndentScreen() {
             return;
         }
 
-        const newIndent = createIndentObject('pending_approval');
-        dispatch({ type: 'CREATE_INDENT', payload: newIndent });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent created successfully', type: 'success' } });
-        window.location.hash = '#store-pending';
+        saveIndent('pending_approval');
+    };
+
+    // Uploads any attachments, then saves the indent (not saved if an upload fails)
+    const saveIndent = (status) => {
+        const newIndent = createIndentObject(status);
+        const finish = (docs) => {
+            newIndent.documents = docs.map(d => { d.uploadedBy = currentUserId; return d; });
+            dispatch({ type: 'CREATE_INDENT', payload: newIndent });
+            dispatch({ type: 'SHOW_TOAST', payload: { message: status === 'draft' ? 'Draft saved' : 'Indent submitted for approval', type: 'success' } });
+            window.location.hash = '#my-indents';
+        };
+        if (attachments.length === 0) { finish([]); return; }
+        setUploading(true);
+        uploadPickedFiles(newIndent.id, attachments, lineItems.map(li => li.id)).then(docs => {
+            setUploading(false);
+            finish(docs);
+        }).catch(err => {
+            setUploading(false);
+            dispatch({ type: 'SHOW_TOAST', payload: { message: (err.message || 'Could not upload the attachments') + '. The indent was not saved.', type: 'error' } });
+        });
     };
 
     const handleSaveDraft = () => {
         if (!selectedSite) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Site is required', type: 'error' } }); return; }
         if (lineItems.some(li => !li.description.trim() || !li.qty)) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'All line items must have description and quantity', type: 'error' } }); return; }
-        if (lineItems.some(li => parseInt(li.qty) <= 0 || li.qty === '')) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'All items must have a quantity of 1 or more', type: 'error' } }); return; }
+        if (lineItems.some(li => parseFloat(li.qty) <= 0 || li.qty === '')) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'All items must have a quantity above zero', type: 'error' } }); return; }
 
-        const newIndent = createIndentObject('draft');
-        dispatch({ type: 'CREATE_INDENT', payload: newIndent });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Draft saved', type: 'success' } });
-        window.location.hash = '#store-pending';
+        saveIndent('draft');
     };
 
     return React.createElement('div', null,
@@ -531,7 +572,7 @@ function StoreNewIndentScreen() {
                                 React.createElement('label', { style: { fontSize: '12px', color: '#64748b', marginBottom: '4px', display: 'block' } }, 'Qty'),
                                 React.createElement('input', {
                                     type: 'number', className: 'form-input', value: li.qty,
-                                    onChange: (e) => handleLineItemChange(li.id, 'qty', parseInt(e.target.value) || 0), min: '1'
+                                    onChange: (e) => handleLineItemChange(li.id, 'qty', e.target.value), min: '0', step: 'any'
                                 })
                             ),
                             React.createElement('div', null,
@@ -541,9 +582,7 @@ function StoreNewIndentScreen() {
                                     onChange: (e) => handleLineItemChange(li.id, 'unit', e.target.value),
                                     disabled: li.isBoq && li.boqItemId
                                 },
-                                    ['bags', 'cum', 'kg', 'litres', 'm', 'm2', 'MT', 'nos', 'pairs', 'sets', 'sheets'].map(u =>
-                                        React.createElement('option', { key: u }, u)
-                                    )
+                                    unitOptionElements(li.unit)
                                 )
                             ),
                             React.createElement('div', null,
@@ -591,9 +630,11 @@ function StoreNewIndentScreen() {
                 React.createElement('button', { className: 'btn btn-secondary', onClick: handleAddLineItem, style: { marginTop: '8px' } }, 'Add Line Item')
             ),
 
+            React.createElement(AttachmentPicker, { files: attachments, setFiles: setAttachments, items: lineItems }),
+
             React.createElement('div', { className: 'action-buttons' },
-                React.createElement('button', { className: 'btn btn-primary', onClick: handleSubmit }, 'Submit Indent'),
-                React.createElement('button', { className: 'btn btn-secondary', onClick: handleSaveDraft }, 'Save as Draft'),
+                React.createElement('button', { className: 'btn btn-primary', onClick: handleSubmit, disabled: uploading }, uploading ? 'Uploading...' : 'Submit Indent'),
+                React.createElement('button', { className: 'btn btn-secondary', onClick: handleSaveDraft, disabled: uploading }, 'Save as Draft'),
                 React.createElement('button', { className: 'btn btn-secondary', onClick: () => { window.location.hash = '#store-pending'; } }, 'Cancel')
             )
         )
@@ -609,10 +650,12 @@ function StoreHistoryScreen() {
     const storeKeeperSites = getUserSites(state.currentUserId, state.sites, state.siteAssignments);
     const siteIds = storeKeeperSites.map(s => s.id);
 
-    const historyIndents = state.indents.filter(i => {
+    const allHistory = state.indents.filter(i => {
         if (!siteIds.includes(i.siteId)) return false;
         return i.lineItems.some(li => li.received > 0);
-    });
+    }).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    const historyList = useListControls(allHistory, indentListFields(state));
+    const historyIndents = historyList.rows;
 
     const getReceiptStatus = (indent) => {
         return indent.lineItems.every(li => li.received >= li.qty) ? 'Complete' : 'Partial';
@@ -626,6 +669,7 @@ function StoreHistoryScreen() {
         React.createElement('div', { className: 'card-header' },
             React.createElement('div', { className: 'card-title' }, 'Indent History')
         ),
+        React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, historyList.bar),
         React.createElement('table', { className: 'table' },
             React.createElement('thead', null,
                 React.createElement('tr', null,
@@ -669,13 +713,17 @@ function StoreAllScreen() {
     const [filters, setFilters] = useState({});
 
     const allSiteIndentsRaw = state.indents.filter(i => siteIds.includes(i.siteId));
-    const allSiteIndents = applyIndentFilters(allSiteIndentsRaw, filters);
+    const allList = useListControls(
+        applyIndentFilters(allSiteIndentsRaw, filters).slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
+        indentListFields(state));
+    const allSiteIndents = allList.rows;
 
     return React.createElement('div', null,
         React.createElement(IndentFilterBar, {
             sites: storeKeeperSites, users: state.users, filters, setFilters,
             totalCount: allSiteIndentsRaw.length, filteredCount: allSiteIndents.length
         }),
+        allList.bar,
         React.createElement('div', { className: 'card' },
             React.createElement('div', { className: 'card-header' },
                 React.createElement('div', { className: 'card-title' }, 'All Indents for My Store')
@@ -724,9 +772,13 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
     var _ctx = React.useContext(AppContext);
     var state = _ctx[0];
     var dispatch = _ctx[1];
-    var _receivingNow = useState({});
-    var receivingNow = _receivingNow[0];
-    var setReceivingNow = _receivingNow[1];
+    // What is typed (kept as text so decimals such as 2.5 can be entered) ...
+    var _receivingRaw = useState({});
+    var receivingRaw = _receivingRaw[0];
+    var setReceivingRaw = _receivingRaw[1];
+    // ... and the same as numbers
+    var receivingNow = {};
+    Object.keys(receivingRaw).forEach(function(k) { receivingNow[k] = parseFloat(receivingRaw[k]) || 0; });
     var _conditions = useState({});
     var conditions = _conditions[0];
     var setConditions = _conditions[1];
@@ -742,12 +794,18 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
     var _uploading = useState(false);
     var uploading = _uploading[0];
     var setUploading = _uploading[1];
+    var _receiptRemarks = useState('');
+    var receiptRemarks = _receiptRemarks[0];
+    var setReceiptRemarks = _receiptRemarks[1];
 
     var handleReceivingNowChange = function(lineItemId, value) {
         var li = indent.lineItems.find(function(l) { return l.id === lineItemId; });
-        setReceivingNow(Object.assign({}, receivingNow, {
-            [lineItemId]: Math.min(parseInt(value) || 0, (li ? li.qty : 0) - (li ? li.received : 0))
-        }));
+        var remaining = (li ? li.qty : 0) - (li ? li.received : 0);
+        var n = parseFloat(value);
+        var text = value;
+        if (!isNaN(n) && n > remaining) text = String(remaining);
+        if (!isNaN(n) && n < 0) text = '0';
+        setReceivingRaw(Object.assign({}, receivingRaw, { [lineItemId]: text }));
     };
 
     var handlePhotoChange = function(e) {
@@ -787,6 +845,15 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
             return;
         }
 
+        // A receipt needs evidence: a photo, or remarks
+        var anyRemark = receiptRemarks.trim() !== '' || indent.lineItems.some(function(li) {
+            return (receivingNow[li.id] || 0) > 0 && (qualityRemarks[li.id] || '').trim() !== '';
+        });
+        if (!photoFile && !anyRemark) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Add a photo or remarks to record this receipt', type: 'error' } });
+            return;
+        }
+
         // Upload photo if present
         var photoUrl = '';
         if (photoFile) {
@@ -807,6 +874,11 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
             setUploading(false);
         }
 
+        if (!photoUrl && !anyRemark) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'The photo was not uploaded. Add remarks, or try the photo again.', type: 'error' } });
+            return;
+        }
+
         // Summarise what was received, in what condition, so it is kept with the indent
         var receipts = [];
         var receiptLines = [];
@@ -824,7 +896,7 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
         });
         var receiptNote = receiptLines.join('; ') + (photoUrl ? ' | Photo: ' + photoUrl : '');
 
-        dispatch({ type: 'RECEIVE_ITEMS', payload: { indentId: indent.id, lineItemUpdates, receipts: receipts, photoUrl: photoUrl, receiptNote: receiptNote, qualityIssues: qualityIssues } });
+        dispatch({ type: 'RECEIVE_ITEMS', payload: { indentId: indent.id, lineItemUpdates, receipts: receipts, photoUrl: photoUrl, remarks: receiptRemarks.trim(), receiptNote: receiptNote, qualityIssues: qualityIssues } });
 
         var allFullyReceived = indent.lineItems.every(function(li) { return (lineItemUpdates[li.id] || li.received) >= li.qty; });
         var message = allFullyReceived ? 'Receipt saved - Indent completed' : 'Receipt saved successfully';
@@ -874,7 +946,7 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
                     React.createElement('tbody', null,
                         indent.lineItems.map(function(li) {
                             var remaining = li.qty - li.received;
-                            var receivingAmount = receivingNow[li.id] || 0;
+                            var receivingAmount = receivingRaw[li.id] !== undefined ? receivingRaw[li.id] : '';
                             return React.createElement('tr', { key: li.id },
                                 React.createElement('td', null, li.description),
                                 React.createElement('td', null, li.qty),
@@ -884,7 +956,7 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
                                 React.createElement('td', null,
                                     React.createElement('input', {
                                         type: 'number', className: 'form-input',
-                                        style: { width: '70px' }, min: '0', max: remaining,
+                                        style: { width: '80px' }, min: '0', max: remaining, step: 'any',
                                         value: receivingAmount,
                                         onChange: function(e) { handleReceivingNowChange(li.id, e.target.value); },
                                         placeholder: '0'
@@ -924,9 +996,16 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
 
         React.createElement('div', { className: 'card' },
             React.createElement('div', { className: 'card-header' },
-                React.createElement('div', { className: 'card-title' }, 'Attach Photo')
+                React.createElement('div', { className: 'card-title' }, 'Photo or Remarks (at least one is required)')
             ),
             React.createElement('div', { style: { padding: '16px' } },
+                React.createElement('label', { className: 'form-label', htmlFor: 'receipt-remarks' }, 'Remarks'),
+                React.createElement('textarea', {
+                    id: 'receipt-remarks', className: 'form-textarea', value: receiptRemarks,
+                    onChange: function(e) { setReceiptRemarks(e.target.value); },
+                    placeholder: 'Vehicle / challan number, who delivered, anything noticed...',
+                    style: { minHeight: '60px', marginBottom: '16px' }
+                }),
                 React.createElement('label', {
                     htmlFor: 'photo-upload',
                     style: {

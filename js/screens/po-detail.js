@@ -90,6 +90,15 @@ function GRNRecordingSection(_ref) {
       return;
     }
 
+    // A receipt needs evidence: a photo, or remarks
+    var anyRemark = grnRemarks.trim() !== '' || receipts.some(function(r) {
+      return (r.remarks || '').trim() !== '' || (r.qualityRemarks || '').trim() !== '';
+    });
+    if (!photoFile && !anyRemark) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Add a photo or remarks to record this receipt', type: 'error' } });
+      return;
+    }
+
     // Upload photo if present
     var photoUrl = '';
     if (photoFile) {
@@ -108,6 +117,10 @@ function GRNRecordingSection(_ref) {
         console.warn('[NC_MIS] Photo upload error:', uploadErr);
       }
       setUploading(false);
+    }
+    if (!photoUrl && !anyRemark) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'The photo was not uploaded. Add remarks, or try the photo again.', type: 'error' } });
+      return;
     }
 
     dispatch({ type: 'RECEIVE_AGAINST_PO', payload: { poId: po.id, receipts: receipts, remarks: grnRemarks, photoUrl: photoUrl } });
@@ -206,7 +219,7 @@ function GRNRecordingSection(_ref) {
     ),
     // GRN-level remarks
     React.createElement('div', { style: { marginBottom: '12px' } },
-      React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: 600, color: '#15803d', marginBottom: '4px' } }, 'GRN Remarks'),
+      React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: 600, color: '#15803d', marginBottom: '4px' } }, 'Receipt Remarks (a photo or remarks is required)'),
       React.createElement('input', {
         type: 'text', value: grnRemarks,
         onChange: function(e) { setGrnRemarks(e.target.value); },
@@ -216,7 +229,7 @@ function GRNRecordingSection(_ref) {
     ),
     // Photo upload
     React.createElement('div', { style: { marginBottom: '12px' } },
-      React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: 600, color: '#15803d', marginBottom: '4px' } }, 'Attach Photo (Invoice/Delivery)'),
+      React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: 600, color: '#15803d', marginBottom: '4px' } }, 'Attach Photo (invoice / delivery challan / material)'),
       React.createElement('label', {
         htmlFor: 'grn-photo-upload',
         style: {
@@ -273,6 +286,12 @@ function PODetailScreen(_ref) {
   var editForm = _editForm[0];
   var setEditForm = _editForm[1];
 
+  // Decision being entered: '', approve, reject, close, cancel
+  var _mode = useState('');
+  var mode = _mode[0], setMode = _mode[1];
+  var _text = useState('');
+  var text = _text[0], setText = _text[1];
+
   if (!po) {
     return React.createElement('div', { style: { padding: '20px' } },
       React.createElement('h2', null, 'Purchase Order Not Found'),
@@ -287,7 +306,7 @@ function PODetailScreen(_ref) {
       vendorName: po.vendorName,
       deliveryDate: po.deliveryDate || '',
       paymentTerms: po.paymentTerms || '',
-      remarks: po.remarks || '',
+      notes: po.notes || '',
       lineItems: po.lineItems.map(function(li) { return Object.assign({}, li); })
     });
     setEditing(true);
@@ -322,24 +341,16 @@ function PODetailScreen(_ref) {
   var handleSaveEdit = function() {
     var newVersion = (po.version || 1) + 1;
     var newTotalAmount = editForm.lineItems.reduce(function(sum, li) { return sum + lineTotal(li); }, 0);
-    var versionEntry = {
-      version: po.version || 1,
-      editedBy: state.currentUserId,
-      editedAt: new Date().toISOString(),
-      totalAmount: po.totalAmount
-    };
-    var updatedPO = Object.assign({}, po, {
-      vendorId: editForm.vendorId,
-      vendorName: editForm.vendorName,
-      deliveryDate: editForm.deliveryDate,
-      paymentTerms: editForm.paymentTerms,
-      remarks: editForm.remarks,
-      lineItems: editForm.lineItems,
-      totalAmount: newTotalAmount,
-      version: newVersion,
-      versionHistory: (po.versionHistory || []).concat([versionEntry])
-    });
-    dispatch({ type: 'UPDATE_PO', payload: { poId: po.id, updates: { vendorId: editForm.vendorId, vendorName: editForm.vendorName, deliveryDate: editForm.deliveryDate, paymentTerms: editForm.paymentTerms, remarks: editForm.remarks, lineItems: editForm.lineItems, totalAmount: newTotalAmount }, note: 'Edited PO to version ' + newVersion } });
+    if (!editForm.vendorId) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please select a vendor', type: 'error' } });
+      return;
+    }
+    var badLine = editForm.lineItems.find(function(li) { return !(Number(li.quantity) > 0); });
+    if (badLine) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Quantity must be above zero for "' + (badLine.description || 'item') + '"', type: 'error' } });
+      return;
+    }
+    dispatch({ type: 'UPDATE_PO', payload: { poId: po.id, updates: { vendorId: editForm.vendorId, deliveryDate: editForm.deliveryDate || null, paymentTerms: editForm.paymentTerms, notes: editForm.notes, lineItems: editForm.lineItems, totalAmount: newTotalAmount }, note: 'Edited PO to version ' + newVersion } });
     dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO updated to version ' + newVersion, type: 'success' } });
     setEditing(false);
     setEditForm(null);
@@ -377,7 +388,7 @@ function PODetailScreen(_ref) {
         '<td style="border:1px solid #ccc;padding:6px;text-align:right;">' + lineTotal(li).toFixed(2) + '</td>' +
         '</tr>';
     }).join('');
-    var html = '<!DOCTYPE html><html><head><title>PO ' + po.id + '</title>' +
+    var html = '<!DOCTYPE html><html><head><title>' + escapeHtml(getPODisplayId(po)) + '</title>' +
       '<style>body{font-family:Arial,sans-serif;padding:30px;} table{border-collapse:collapse;width:100%;margin-top:10px;} @media print{button{display:none;}}</style>' +
       '</head><body>' +
       '<div style="text-align:center;margin-bottom:20px;">' +
@@ -402,7 +413,7 @@ function PODetailScreen(_ref) {
       '<th style="border:1px solid #ccc;padding:6px;">Amount</th>' +
       '</tr></thead><tbody>' + lineRows + '</tbody></table>' +
       '<p style="text-align:right;font-weight:bold;margin-top:12px;">Total: Rs. ' + (po.totalAmount || 0).toFixed(2) + '</p>' +
-      (po.remarks ? '<p><strong>Remarks:</strong> ' + po.remarks + '</p>' : '') +
+      (po.notes ? '<p><strong>Remarks:</strong> ' + escapeHtml(po.notes) + '</p>' : '') +
       '<br/><button onclick="window.print()">Print</button>' +
       '</body></html>';
     printWin.document.write(html);
@@ -411,11 +422,11 @@ function PODetailScreen(_ref) {
 
   var handleMailto = function() {
     var vendorEmail = vendor && vendor.email ? vendor.email : '';
-    var subject = encodeURIComponent('PO ' + po.id + ' from ' + (orgSettings.companyName || ''));
+    var subject = encodeURIComponent(getPODisplayId(po) + ' from ' + (orgSettings.companyName || ''));
     var bodyLines = [
       'Dear ' + po.vendorName + ',',
       '',
-      'Please find the details of Purchase Order ' + po.id + ':',
+      'Please find the details of Purchase Order ' + getPODisplayId(po) + ':',
       '',
       'Total Amount: Rs. ' + (po.totalAmount || 0).toFixed(2),
       'Delivery Date: ' + (po.deliveryDate || 'TBD'),
@@ -434,6 +445,41 @@ function PODetailScreen(_ref) {
   var formatDate = function(dateStr) {
     if (!dateStr) return 'N/A';
     return new Date(dateStr).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  };
+
+  var isMD = _poRole === 'md';
+  var isPOManager = _poRole === 'procurement_manager' || _poRole === 'admin';
+  var mdLimit = poApprovalLimit(state);
+  var needsMD = poNeedsMD(po, state);
+  var missing = poMissingFields(po);
+  var poToast = function(message, type) { dispatch({ type: 'SHOW_TOAST', payload: { message: message, type: type || 'success' } }); };
+  var openMode = function(m) { setMode(mode === m ? '' : m); setText(''); };
+  var closeMode = function() { setMode(''); setText(''); };
+
+  var readyOrExplain = function() {
+    if (missing.length === 0) return true;
+    poToast('This PO is missing: ' + missing.slice(0, 4).join(', ') + '. Use Edit PO to complete it.', 'error');
+    return false;
+  };
+
+  var poDecisions = {
+    approve: { title: 'Approve ' + getPODisplayId(po), label: 'MD remarks (required)', confirm: 'Confirm Approval', cls: 'btn btn-success',
+               run: function() { dispatch({ type: 'MD_APPROVE_PO', payload: { poId: po.id, remarks: text.trim() } }); poToast('PO approved'); } },
+    reject:  { title: 'Reject ' + getPODisplayId(po), label: 'Reason for rejection (required)', confirm: 'Confirm Rejection', cls: 'btn btn-danger',
+               run: function() { dispatch({ type: 'MD_REJECT_PO', payload: { poId: po.id, reason: text.trim() } }); poToast('PO rejected and returned to procurement'); } },
+    close:   { title: (po.status === 'partially_fulfilled' ? 'Short-close ' : 'Close ') + getPODisplayId(po),
+               label: po.status === 'partially_fulfilled' ? 'Why the balance will not be supplied (required)' : 'Closing remarks (required)',
+               confirm: po.status === 'partially_fulfilled' ? 'Confirm Short-Close' : 'Confirm Close', cls: 'btn btn-success',
+               run: function() { dispatch({ type: 'CLOSE_PO', payload: { poId: po.id, remarks: text.trim() } }); poToast(po.status === 'partially_fulfilled' ? 'PO short-closed' : 'PO closed'); } },
+    cancel:  { title: 'Cancel draft ' + getPODisplayId(po), label: 'Reason for cancelling (required)', confirm: 'Confirm Cancel', cls: 'btn btn-danger',
+               run: function() { dispatch({ type: 'CANCEL_PO', payload: { poId: po.id, reason: text.trim() } }); poToast('PO cancelled'); } },
+  };
+  var confirmPODecision = function() {
+    var d = poDecisions[mode];
+    if (!d) return;
+    if (!text.trim()) { poToast('Please fill in: ' + d.label.replace(' (required)', ''), 'error'); return; }
+    d.run();
+    closeMode();
   };
 
   var statusColors = {
@@ -471,7 +517,7 @@ function PODetailScreen(_ref) {
           React.createElement('span', { style: { color: '#6b7280' } }, 'Status: '),
           React.createElement('span', {
             style: { background: statusColors[po.status] || '#6b7280', color: '#fff', padding: '2px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: '500' }
-          }, po.status)
+          }, statusLabel(po.status))
         ),
         React.createElement('div', null,
           React.createElement('span', { style: { color: '#6b7280' } }, 'Version: '),
@@ -481,9 +527,30 @@ function PODetailScreen(_ref) {
           React.createElement('span', { style: { color: '#6b7280' } }, 'Payment Terms: '),
           React.createElement('strong', null, po.paymentTerms || 'N/A')
         ),
-        po.remarks ? React.createElement('div', { style: { gridColumn: '1 / -1' } },
+        React.createElement('div', null,
+          React.createElement('span', { style: { color: '#6b7280' } }, 'Total Value: '),
+          React.createElement('strong', null, formatRs(po.totalAmount))
+        ),
+        React.createElement('div', null,
+          React.createElement('span', { style: { color: '#6b7280' } }, 'Raised By: '),
+          React.createElement('strong', null, getUserName(po.createdBy, state.users))
+        ),
+        po.notes ? React.createElement('div', { style: { gridColumn: '1 / -1' } },
           React.createElement('span', { style: { color: '#6b7280' } }, 'Remarks: '),
+          React.createElement('span', null, po.notes)
+        ) : null,
+        (po.status !== 'draft' && po.status !== 'pending_approval' && po.status !== 'cancelled' && po.approvalRoute) ? React.createElement('div', { style: { gridColumn: '1 / -1' } },
+          React.createElement('span', { style: { color: '#6b7280' } }, 'Approval: '),
+          React.createElement('span', null, po.approvalRoute === 'direct'
+            ? 'Issued by procurement within the MD approval limit (MD approval not required)'
+            : 'Approved by MD' + (po.mdRemarks ? ' — "' + po.mdRemarks + '"' : ''))
+        ) : null,
+        po.remarks ? React.createElement('div', { style: { gridColumn: '1 / -1', color: '#b91c1c' } },
           React.createElement('span', null, po.remarks)
+        ) : null,
+        po.closeRemarks ? React.createElement('div', { style: { gridColumn: '1 / -1' } },
+          React.createElement('span', { style: { color: '#6b7280' } }, 'Closing remarks: '),
+          React.createElement('span', null, po.closeRemarks)
         ) : null,
         po.indentId ? React.createElement('div', { style: { gridColumn: '1 / -1' } },
           React.createElement('span', { style: { color: '#6b7280' } }, 'Linked Indent: '),
@@ -491,92 +558,110 @@ function PODetailScreen(_ref) {
         ) : null
       )
     ),
-    React.createElement('div', { style: { display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' } },
-      // Contextual buttons based on PO status and user role
+    // What this PO still needs / which approval route applies (procurement, draft only)
+    (canManagePO && po.status === 'draft') ? React.createElement('div', {
+      style: { padding: '10px 14px', borderRadius: 8, marginBottom: 12, fontSize: 13, color: '#1e293b',
+               background: missing.length ? '#fffbeb' : (needsMD ? '#fef2f2' : '#f0fdf4'),
+               border: '1px solid ' + (missing.length ? '#fde68a' : (needsMD ? '#fecaca' : '#bbf7d0')) }
+    },
+      missing.length
+        ? 'Before this PO can be sent or issued it needs: ' + missing.join(', ') + '.'
+        : (needsMD
+            ? 'Value ' + formatRs(poValueForLimit(po, state)) + ' is above the ' + formatRs(mdLimit) + ' limit: MD approval is required.'
+            : 'Value ' + formatRs(poValueForLimit(po, state)) + ' is within the ' + formatRs(mdLimit) + ' limit: the procurement manager can issue it directly, or it can be sent to the MD.')
+    ) : null,
+    (isMD && po.status === 'pending_approval') ? React.createElement('div', {
+      style: { padding: '10px 14px', borderRadius: 8, marginBottom: 12, fontSize: 13, background: '#ede9fe', border: '1px solid #c4b5fd', color: '#1e293b' }
+    }, 'This PO is waiting for your approval. Remarks are required whether you approve or reject.') : null,
+
+    React.createElement('div', { style: { display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' } },
+      // Draft: procurement
       canManagePO && po.status === 'draft' && React.createElement('button', { className: 'btn btn-primary', onClick: editing ? cancelEdit : startEdit }, editing ? 'Cancel Edit' : 'Edit PO'),
-      canManagePO && po.status === 'draft' && React.createElement('button', {
+      (canManagePO && po.status === 'draft' && !editing && isPOManager && !needsMD) && React.createElement('button', {
         className: 'btn btn-success',
         onClick: function() {
+          if (!readyOrExplain()) return;
+          if (!window.confirm('Issue ' + getPODisplayId(po) + ' (' + formatRs(po.totalAmount) + ') to the vendor without MD approval?')) return;
+          dispatch({ type: 'ISSUE_PO', payload: { poId: po.id } });
+          poToast('PO issued to vendor');
+        }
+      }, 'Issue to Vendor'),
+      (canManagePO && po.status === 'draft' && !editing) && React.createElement('button', {
+        className: needsMD ? 'btn btn-success' : 'btn btn-secondary',
+        onClick: function() {
+          if (!readyOrExplain()) return;
           dispatch({ type: 'SUBMIT_PO_FOR_APPROVAL', payload: { poId: po.id } });
-          dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO submitted for approval', type: 'success' } });
+          poToast('PO sent for MD approval');
         }
-      }, 'Submit for Approval'),
-      canManagePO && po.status === 'draft' && React.createElement('button', {
-        className: 'btn btn-danger',
-        onClick: function() {
-          if (window.confirm('Cancel this PO?')) {
-            dispatch({ type: 'CANCEL_PO', payload: { poId: po.id, reason: 'Cancelled from draft' } });
-            dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO cancelled', type: 'success' } });
-          }
-        }
-      }, 'Delete'),
-      (po.status === 'pending_approval' || po.status === 'pending_approval') && state.currentUser && state.currentUser.role === 'md' && React.createElement('button', {
-        className: 'btn btn-success',
-        onClick: function() {
-          dispatch({ type: 'MD_APPROVE_PO', payload: { poId: po.id } });
-          dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO approved', type: 'success' } });
-        }
-      }, 'Approve'),
-      (po.status === 'pending_approval' || po.status === 'pending_approval') && state.currentUser && state.currentUser.role === 'md' && React.createElement('button', {
-        className: 'btn btn-danger',
-        onClick: function() {
-          var reason = window.prompt('Rejection reason:');
-          if (reason !== null && !reason.trim()) {
-            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide a rejection reason', type: 'error' } });
-          } else if (reason !== null) {
-            dispatch({ type: 'MD_REJECT_PO', payload: { poId: po.id, reason: reason.trim() } });
-            dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO rejected', type: 'info' } });
-          }
-        }
-      }, 'Reject'),
+      }, needsMD ? 'Send for MD Approval' : 'Send for MD Approval anyway'),
+      (canManagePO && po.status === 'draft' && !editing) && React.createElement('button', { className: 'btn btn-danger', onClick: function() { openMode('cancel'); } }, 'Cancel PO'),
+
+      // With the MD
+      (isMD && po.status === 'pending_approval') && React.createElement('button', { className: 'btn btn-success', onClick: function() { openMode('approve'); } }, 'Approve PO'),
+      (isMD && po.status === 'pending_approval') && React.createElement('button', { className: 'btn btn-danger', onClick: function() { openMode('reject'); } }, 'Reject PO'),
+
+      // Approved: issue
       canManagePO && po.status === 'approved' && React.createElement('button', {
         className: 'btn btn-success',
         onClick: function() {
+          if (!readyOrExplain()) return;
           dispatch({ type: 'ISSUE_PO', payload: { poId: po.id } });
-          dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO issued to vendor', type: 'success' } });
+          poToast('PO issued to vendor');
         }
       }, 'Issue to Vendor'),
-      (po.status === 'approved' || po.status === 'issued') && React.createElement('button', { className: 'btn btn-primary', onClick: handlePrint }, 'Print / PDF'),
-      canManagePO && (po.status === 'approved' || po.status === 'issued') && React.createElement('button', { className: 'btn btn-secondary', onClick: handleMailto }, 'Email Vendor'),
+
+      // Issued: amend (before any receipt)
       canManagePO && po.status === 'issued' && React.createElement('button', {
         className: 'btn btn-secondary',
         onClick: function() {
+          if (!window.confirm('Take ' + getPODisplayId(po) + ' back to draft so it can be changed? It will need to be issued again.')) return;
           dispatch({ type: 'AMEND_PO', payload: { poId: po.id } });
-          dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO amendment requested', type: 'info' } });
+          poToast('PO is back in draft for amendment', 'info');
         }
-      }, 'Amend PO (Revert to Draft)'),
-      canManagePO && (po.status === 'partially_fulfilled') && React.createElement('button', {
-        className: 'btn btn-secondary',
-        onClick: function() {
-          dispatch({ type: 'CLOSE_PO', payload: { poId: po.id } });
-          dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO short-closed', type: 'success' } });
-        }
-      }, 'Short-Close'),
-      canManagePO && po.status === 'fulfilled' && React.createElement('button', {
-        className: 'btn btn-success',
-        onClick: function() {
-          dispatch({ type: 'CLOSE_PO', payload: { poId: po.id } });
-          dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO closed', type: 'success' } });
-        }
-      }, 'Close PO'),
-      (po.status !== 'draft') && React.createElement('button', { className: 'btn btn-primary', onClick: handlePrint }, 'Download PDF')
+      }, 'Amend PO (back to draft)'),
+
+      // Received: close
+      (isPOManager && po.status === 'partially_fulfilled') && React.createElement('button', { className: 'btn btn-secondary', onClick: function() { openMode('close'); } }, 'Short-Close PO'),
+      (isPOManager && po.status === 'fulfilled') && React.createElement('button', { className: 'btn btn-success', onClick: function() { openMode('close'); } }, 'Close PO'),
+
+      React.createElement('button', { className: 'btn btn-primary', onClick: handlePrint }, 'Print / Save as PDF'),
+      canManagePO && (po.status === 'approved' || po.status === 'issued') && React.createElement('button', { className: 'btn btn-secondary', onClick: handleMailto }, 'Email Vendor')
     ),
+
+    poDecisions[mode] ? React.createElement('div', {
+      style: { marginBottom: 20, padding: 16, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8 }
+    },
+      React.createElement('div', { style: { fontWeight: 700, fontSize: 14, marginBottom: 8 } }, poDecisions[mode].title),
+      React.createElement('label', { style: { display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 } }, poDecisions[mode].label),
+      React.createElement('textarea', {
+        value: text, onChange: function(e) { setText(e.target.value); }, rows: 3, autoFocus: true,
+        'aria-label': poDecisions[mode].label,
+        style: { width: '100%', padding: 8, border: '1px solid #d1d5db', borderRadius: 6, marginBottom: 8, boxSizing: 'border-box', fontSize: 13 }
+      }),
+      React.createElement('div', { style: { display: 'flex', gap: 8 } },
+        React.createElement('button', { className: poDecisions[mode].cls, onClick: confirmPODecision }, poDecisions[mode].confirm),
+        React.createElement('button', { className: 'btn btn-secondary', onClick: closeMode }, 'Back')
+      )
+    ) : React.createElement('div', { style: { marginBottom: 8 } }),
+
     editing && editForm ? React.createElement('div', {
       style: { background: '#fffbeb', border: '1px solid #fbbf24', borderRadius: '8px', padding: '20px', marginBottom: '20px' }
     },
       React.createElement('h3', { style: { marginTop: 0, marginBottom: '16px' } }, 'Edit Purchase Order'),
       React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' } },
         React.createElement('div', null,
-          React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Vendor Name'),
-          React.createElement('input', {
-            type: 'text',
-            value: editForm.vendorName,
-            onChange: function(e) { setEditForm(function(prev) { return Object.assign({}, prev, { vendorName: e.target.value }); }); },
+          React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Vendor *'),
+          React.createElement('select', {
+            value: editForm.vendorId || '',
+            onChange: function(e) { var v = e.target.value; setEditForm(function(prev) { return Object.assign({}, prev, { vendorId: v }); }); },
             style: { width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', boxSizing: 'border-box' }
-          })
+          },
+            React.createElement('option', { value: '' }, 'Select Vendor'),
+            (state.vendors || []).map(function(v) { return React.createElement('option', { key: v.id, value: v.id }, v.name); })
+          )
         ),
         React.createElement('div', null,
-          React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Delivery Date'),
+          React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Delivery Date *'),
           React.createElement('input', {
             type: 'date',
             value: editForm.deliveryDate,
@@ -594,10 +679,10 @@ function PODetailScreen(_ref) {
           })
         ),
         React.createElement('div', { style: { gridColumn: '1 / -1' } },
-          React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Remarks'),
+          React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Remarks *'),
           React.createElement('textarea', {
-            value: editForm.remarks,
-            onChange: function(e) { setEditForm(function(prev) { return Object.assign({}, prev, { remarks: e.target.value }); }); },
+            value: editForm.notes,
+            onChange: function(e) { var v = e.target.value; setEditForm(function(prev) { return Object.assign({}, prev, { notes: v }); }); },
             rows: 2,
             style: { width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', boxSizing: 'border-box' }
           })
@@ -609,7 +694,7 @@ function PODetailScreen(_ref) {
           React.createElement('tr', { style: { background: '#f9fafb' } },
             React.createElement('th', { style: { padding: '6px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' } }, 'Description'),
             React.createElement('th', { style: { padding: '6px', textAlign: 'center', borderBottom: '1px solid #e5e7eb', width: '70px' } }, 'Qty'),
-            React.createElement('th', { style: { padding: '6px', textAlign: 'center', borderBottom: '1px solid #e5e7eb', width: '90px' } }, 'Rate'),
+            React.createElement('th', { style: { padding: '6px', textAlign: 'center', borderBottom: '1px solid #e5e7eb', width: '90px' } }, 'Rate *'),
             React.createElement('th', { style: { padding: '6px', textAlign: 'center', borderBottom: '1px solid #e5e7eb', width: '70px' } }, 'GST%'),
             React.createElement('th', { style: { padding: '6px', textAlign: 'right', borderBottom: '1px solid #e5e7eb', width: '90px' } }, 'Amount')
           )
@@ -773,20 +858,11 @@ function PODetailScreen(_ref) {
         'Current Version: ' + (po.version || 1)
       )
     ),
-    React.createElement('div', { style: { background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' } },
+    (canManagePO && (po.status === 'approved' || po.status === 'issued' || po.status === 'partially_fulfilled')) ? React.createElement('div', { style: { background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' } },
       React.createElement('h3', { style: { marginTop: 0, marginBottom: '12px' } }, 'Email to Vendor'),
-      React.createElement('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
-        React.createElement('button', { className: 'btn btn-primary', onClick: handleMailto }, 'Open in Email Client'),
-        React.createElement('button', {
-          className: 'btn btn-secondary',
-          onClick: function() {
-            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Gmail connector is not configured. Please set up the Gmail integration to send emails directly.', type: 'info' } });
-          }
-        }, 'Send via Gmail')
-      ),
+      React.createElement('button', { className: 'btn btn-primary', onClick: handleMailto }, 'Open in Email Client'),
       React.createElement('p', { style: { fontSize: '13px', color: '#6b7280', marginTop: '8px' } },
-        'Note: "Send via Gmail" requires the Gmail connector to be configured. Use "Open in Email Client" to compose the email in your default mail application.'
-      )
-    )
+        'Opens a ready-written email in your mail application. Attach the PO PDF (Print / Save as PDF) before sending.')
+    ) : null
   );
 }

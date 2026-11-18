@@ -2,6 +2,103 @@
 
 
 // ============================================================================
+// Shared procurement pieces
+// ============================================================================
+
+// Dispatch without a PO: vendor, expected date and notes / document reference
+function DispatchModal({ indentId, onClose }) {
+    const [state, dispatch] = React.useContext(AppContext);
+    const [vendor, setVendor] = useState('');
+    const [eta, setEta] = useState('');
+    const [notes, setNotes] = useState('');
+    const [docRef, setDocRef] = useState('');
+    const indent = state.indents.find(i => i.id === indentId);
+
+    const confirm = () => {
+        const err = (m) => dispatch({ type: 'SHOW_TOAST', payload: { message: m, type: 'error' } });
+        if (!vendor.trim()) return err('Vendor / supplier name is required');
+        if (!eta) return err('Expected delivery date is required');
+        if (!notes.trim()) return err('Dispatch notes are required');
+        dispatch({ type: 'MARK_DISPATCHED', payload: { indentId, vendorName: vendor.trim(), expectedDelivery: eta, notes: notes.trim(), docReference: docRef.trim() } });
+        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent dispatched — the storekeeper has been told', type: 'success' } });
+        onClose();
+    };
+
+    return React.createElement('div', {
+        style: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }
+    },
+        React.createElement('div', { role: 'dialog', 'aria-label': 'Dispatch details', style: { background: '#fff', borderRadius: '12px', padding: '24px', width: '500px', maxWidth: '90vw' } },
+            React.createElement('h3', { style: { marginBottom: '8px', fontSize: '18px', fontWeight: '700' } },
+                'Dispatch without a PO' + (indent ? ' — ' + getIndentDisplayId(indent, state.indents) : '')),
+            React.createElement('p', { style: { fontSize: '13px', color: '#64748b', marginBottom: '16px' } },
+                'Use this when material is sent to site without raising a purchase order here. The storekeeper will record the receipt against the indent.'),
+            React.createElement('div', { style: { display: 'grid', gap: '12px' } },
+                React.createElement('div', null,
+                    React.createElement('label', { className: 'form-label' }, 'Vendor / Supplier Name *'),
+                    React.createElement('input', { type: 'text', className: 'form-input', value: vendor, onChange: (e) => setVendor(e.target.value), placeholder: 'Vendor, or "Own stock" / "Other site"' })
+                ),
+                React.createElement('div', null,
+                    React.createElement('label', { className: 'form-label' }, 'Expected Delivery Date *'),
+                    React.createElement('input', { type: 'date', className: 'form-input', value: eta, onChange: (e) => setEta(e.target.value), min: new Date().toISOString().split('T')[0] })
+                ),
+                React.createElement('div', null,
+                    React.createElement('label', { className: 'form-label' }, 'Document / Invoice Reference'),
+                    React.createElement('input', { type: 'text', className: 'form-input', value: docRef, onChange: (e) => setDocRef(e.target.value), placeholder: 'Invoice no., DC no., etc.' })
+                ),
+                React.createElement('div', null,
+                    React.createElement('label', { className: 'form-label' }, 'Dispatch Notes *'),
+                    React.createElement('textarea', { className: 'form-textarea', value: notes, onChange: (e) => setNotes(e.target.value), placeholder: 'Why no PO, transport details, quantity dispatched, etc.', style: { minHeight: '80px' } })
+                )
+            ),
+            React.createElement('div', { style: { marginTop: '16px', display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
+                React.createElement('button', { className: 'btn btn-secondary', onClick: onClose }, 'Cancel'),
+                React.createElement('button', { className: 'btn btn-success', onClick: confirm }, 'Confirm Dispatch')
+            )
+        )
+    );
+}
+
+// Table of indents for the procurement work lists.
+//   actions(indent) -> buttons for the last column (optional)
+function IndentWorkTable({ indents, emptyText, actions }) {
+    const [state] = React.useContext(AppContext);
+    const headers = ['Indent No.', 'Description', 'Site', 'Raised By', 'Items', 'Stage', 'PO', 'Assigned To', 'Created'];
+    if (actions) headers.push('Actions');
+    return React.createElement('table', { className: 'table' },
+        React.createElement('thead', null,
+            React.createElement('tr', null, headers.map(h => React.createElement('th', { key: h }, h)))
+        ),
+        React.createElement('tbody', null,
+            indents.length === 0
+                ? React.createElement('tr', null,
+                    React.createElement('td', { colSpan: String(headers.length), style: { textAlign: 'center', padding: '20px', color: '#64748b' } }, emptyText))
+                : indents.map(indent => {
+                    const pos = (state.purchaseOrders || []).filter(po => po.indentId === indent.id && po.status !== 'cancelled');
+                    return React.createElement('tr', { key: indent.id },
+                        React.createElement('td', null,
+                            React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb', fontWeight: 600 } }, getIndentDisplayId(indent, state.indents))),
+                        React.createElement('td', null, (indent.lineItems || []).map(li => li.name || li.description).join(', ')),
+                        React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
+                        React.createElement('td', null, getUserName(indent.createdBy, state.users)),
+                        React.createElement('td', null, (indent.lineItems || []).length),
+                        React.createElement('td', null, React.createElement(StatusBadge, { status: indent.status })),
+                        React.createElement('td', null,
+                            pos.length === 0 ? '-' : pos.map(po =>
+                                React.createElement('div', { key: po.id },
+                                    React.createElement('a', { href: '#po/' + po.id, style: { textDecoration: 'none', color: '#2563eb' } }, getPODisplayId(po)),
+                                    React.createElement('span', { style: { fontSize: 11, color: '#64748b' } }, ' (' + statusLabel(po.status) + ')')))),
+                        React.createElement('td', null, indent.assignedTo ? getUserName(indent.assignedTo, state.users) : '-'),
+                        React.createElement('td', null, new Date(indent.createdAt).toLocaleDateString()),
+                        actions ? React.createElement('td', null, actions(indent)) : null
+                    );
+                })
+        )
+    );
+}
+
+var PROCUREMENT_OPEN_STAGES = ['po_draft', 'pending_md_po_approval', 'po_approved', 'po_issued', 'dispatched'];
+
+// ============================================================================
 // 1. ESCALATED SCREEN
 // ============================================================================
 
@@ -20,11 +117,13 @@ function EscalatedScreen() {
         const hoursPending = getHoursPending(i.createdAt);
         return hoursPending > 36;
     }).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-    const escalatedIndents = applyIndentFilters(allEscalated, filters);
+    const list = useListControls(applyIndentFilters(allEscalated, filters), indentListFields(state));
+    const escalatedIndents = list.rows;
 
     return (
         React.createElement('div', null,
             React.createElement(IndentFilterBar, { sites: state.sites, users: state.users, filters, setFilters, totalCount: allEscalated.length, filteredCount: escalatedIndents.length }),
+            list.bar,
             React.createElement('div', { className: 'card' },
                 React.createElement('div', { className: 'card-header' },
                     React.createElement('div', { className: 'card-title' }, 'Escalated Indents (Pending >36h)')
@@ -50,10 +149,10 @@ function EscalatedScreen() {
                                 return React.createElement('tr', {
                                     key: indent.id,
                                     style: { cursor: 'pointer' },
-                                    onClick: () => { window.location.hash = '#approve-detail/' + indent.id; }
+                                    onClick: () => { window.location.hash = '#indent/' + indent.id; }
                                 },
                                     React.createElement('td', null,
-                                        React.createElement('a', { href: '#approve-detail/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
+                                        React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                                     ),
                                     React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
                                     React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
@@ -82,8 +181,10 @@ function ProcurementApprovedScreen() {
     const isProcurementManager = currentUser && currentUser.role === 'procurement_manager';
 
     const allApproved = state.indents.filter(i => i.status === 'approved').sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-    const approvedIndents = applyIndentFilters(allApproved, filters);
+    const list = useListControls(applyIndentFilters(allApproved, filters), indentListFields(state));
+    const approvedIndents = list.rows;
     const clerkUsers = state.users.filter(u => u.role === 'procurement_clerk');
+    const [dispatchIndentId, setDispatchIndentId] = useState(null);
 
     const handleAssign = (indentId) => {
         if (!selectedClerk) {
@@ -115,12 +216,8 @@ function ProcurementApprovedScreen() {
         setEscalateRemarks('');
     };
 
-    const handleDirectFulfill = (indentId) => {
-        // One click used to dispatch immediately; ask first, since it cannot be undone
-        if (!window.confirm('Mark this indent as dispatched by direct fulfillment (no PO)? This cannot be undone.')) return;
-        dispatch({ type: 'MARK_DISPATCHED', payload: { indentId, dispatchVendor: 'Direct Fulfillment', dispatchETA: new Date().toISOString().slice(0, 10), dispatchNotes: 'Direct fulfillment — no PO required' } });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent marked as directly fulfilled (no PO)', type: 'success' } });
-    };
+    // Dispatch without a PO always goes through the details form (vendor, date, notes)
+    const handleDirectFulfill = (indentId) => setDispatchIndentId(indentId);
 
     return (
         React.createElement('div', null,
@@ -145,7 +242,9 @@ function ProcurementApprovedScreen() {
                     )
                 )
             ) : null,
+            dispatchIndentId ? React.createElement(DispatchModal, { indentId: dispatchIndentId, onClose: () => setDispatchIndentId(null) }) : null,
             React.createElement(IndentFilterBar, { sites: state.sites, users: state.users, filters, setFilters, totalCount: allApproved.length, filteredCount: approvedIndents.length }),
+            list.bar,
             React.createElement('div', { className: 'card' },
                 React.createElement('div', { className: 'card-header' },
                     React.createElement('div', { className: 'card-title' }, 'Approved Indents for Procurement')
@@ -209,7 +308,7 @@ function ProcurementApprovedScreen() {
                                                 className: 'btn btn-sm',
                                                 style: { backgroundColor: '#10b981', color: 'white', fontSize: '12px', whiteSpace: 'nowrap' },
                                                 onClick: () => handleDirectFulfill(indent.id)
-                                            }, 'Direct Fulfill')
+                                            }, 'Dispatch without PO')
                                         )
                                     )
                                 )
@@ -228,156 +327,84 @@ function ProcurementApprovedScreen() {
 function ProcurementProgressScreen() {
     const [state, dispatch] = React.useContext(AppContext);
     const [activeTab, setActiveTab] = useState('my-work');
+    const [dispatchIndentId, setDispatchIndentId] = useState(null);
+    const newestFirst = (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
 
-    const myWorkIndents = state.indents.filter(i =>
-        i.status === 'in_procurement' && i.assignedTo === state.currentUserId
-    );
+    // To do: assigned to me, or not assigned to anyone yet (e.g. approved by the MD on escalation)
+    const myWork = state.indents.filter(i =>
+        i.status === 'in_procurement' && (i.assignedTo === state.currentUserId || !i.assignedTo)
+    ).sort(newestFirst);
 
-    const clerkWorkIndents = state.indents.filter(i => {
+    const clerkWork = state.indents.filter(i => {
         if (i.status !== 'in_procurement') return false;
         const assignee = state.users.find(u => u.id === i.assignedTo);
         return assignee && assignee.role === 'procurement_clerk' && i.assignedTo !== state.currentUserId;
-    });
+    }).sort(newestFirst);
 
-    const [dispatchModal, setDispatchModal] = useState(null);
-    const [dispatchVendor, setDispatchVendor] = useState('');
-    const [dispatchETA, setDispatchETA] = useState('');
-    const [dispatchNotes, setDispatchNotes] = useState('');
-    const [dispatchDocRef, setDispatchDocRef] = useState('');
+    // Everything procurement has acted on that is not finished: PO in draft, with the MD,
+    // approved, issued; dispatched without a PO; or escalated to the MD by procurement
+    const ordered = state.indents.filter(i =>
+        PROCUREMENT_OPEN_STAGES.includes(i.status) || (i.status === 'escalated_to_md' && i.approvedBy)
+    ).sort(newestFirst);
 
-    const handleMarkDispatched = (indentId) => {
-        setDispatchModal(indentId);
-        setDispatchVendor('');
-        setDispatchETA('');
-        setDispatchNotes('');
-        setDispatchDocRef('');
+    const completed = state.indents.filter(i => i.status === 'completed').sort(newestFirst);
+
+    const fields = indentListFields(state);
+    const lists = {
+        'my-work': useListControls(myWork, fields),
+        'clerk-work': useListControls(clerkWork, fields),
+        'ordered': useListControls(ordered, fields),
+        'completed': useListControls(completed, fields),
     };
 
-    const handleConfirmDispatch = () => {
-        if (!dispatchVendor.trim()) {
-            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Vendor name is required for dispatch', type: 'error' } });
-            return;
-        }
-        if (!dispatchETA) {
-            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Expected delivery date is required', type: 'error' } });
-            return;
-        }
-        if (!dispatchNotes.trim() && !dispatchDocRef.trim()) {
-            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide dispatch notes or document reference', type: 'error' } });
-            return;
-        }
-        dispatch({ type: 'MARK_DISPATCHED', payload: { indentId: dispatchModal, vendorName: dispatchVendor, expectedDelivery: dispatchETA, notes: dispatchNotes, docReference: dispatchDocRef } });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent dispatched with logistics details', type: 'success' } });
-        setDispatchModal(null);
-    };
-
-    const renderTab = (label, tabKey) => {
+    const renderTab = (label, tabKey, count) => {
         return React.createElement('button', {
             onClick: () => setActiveTab(tabKey),
             style: {
-                padding: '12px 20px',
-                border: 'none',
-                backgroundColor: 'transparent',
-                cursor: 'pointer',
-                fontSize: '14px',
+                padding: '12px 20px', border: 'none', backgroundColor: 'transparent', cursor: 'pointer', fontSize: '14px',
                 fontWeight: activeTab === tabKey ? '600' : '500',
                 color: activeTab === tabKey ? '#2563eb' : '#64748b',
-                borderBottom: activeTab === tabKey ? '3px solid #2563eb' : 'none',
-                transition: 'all 0.2s ease'
+                borderBottom: activeTab === tabKey ? '3px solid #2563eb' : '3px solid transparent',
             }
-        }, label);
+        }, label + ' (' + count + ')');
     };
 
-    const renderIndentTable = (indents, showActions, showAssigned) => {
-        const headers = ['Indent No.', 'Description', 'Site', 'Engineer', 'Items'];
-        if (showAssigned) headers.push('Assigned To');
-        if (showActions) headers.push('Actions');
+    const workActions = (indent) => React.createElement('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
+        React.createElement('button', {
+            className: 'btn btn-sm btn-primary',
+            onClick: () => { window.location.hash = '#create-po/' + indent.id; }
+        }, 'Create PO'),
+        React.createElement('button', {
+            className: 'btn btn-sm btn-success',
+            onClick: () => setDispatchIndentId(indent.id)
+        }, 'Dispatch without PO')
+    );
 
-        return React.createElement('table', { className: 'table' },
-            React.createElement('thead', null,
-                React.createElement('tr', null,
-                    headers.map(h => React.createElement('th', { key: h }, h))
-                )
-            ),
-            React.createElement('tbody', null,
-                indents.length === 0
-                    ? React.createElement('tr', null,
-                        React.createElement('td', { colSpan: String(headers.length), style: { textAlign: 'center', padding: '20px', color: '#64748b' } },
-                            showActions ? 'No indents assigned to you' : 'No clerk work items'
-                        )
-                    )
-                    : indents.map(indent =>
-                        React.createElement('tr', {
-                            key: indent.id,
-                            style: !showActions ? { cursor: 'pointer' } : {},
-                            onClick: !showActions ? () => { window.location.hash = '#indent/' + indent.id; } : undefined
-                        },
-                            React.createElement('td', null,
-                                React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
-                            ),
-                            React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
-                            React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
-                            React.createElement('td', null, getUserName(indent.createdBy, state.users)),
-                            React.createElement('td', null, indent.lineItems.length),
-                            showAssigned ? React.createElement('td', null, getUserName(indent.assignedTo, state.users)) : null,
-                            showActions ? React.createElement('td', null,
-                                React.createElement('div', { style: { display: 'flex', gap: '6px' } },
-                                    React.createElement('button', {
-                                        className: 'btn btn-sm btn-primary',
-                                        onClick: () => { window.location.hash = '#create-po/' + indent.id; }
-                                    }, 'Create PO'),
-                                    React.createElement('button', {
-                                        className: 'btn btn-sm btn-success',
-                                        onClick: () => handleMarkDispatched(indent.id)
-                                    }, 'Mark Dispatched')
-                                )
-                            ) : null
-                        )
-                    )
-            )
-        );
+    const empty = {
+        'my-work': 'Nothing waiting for you',
+        'clerk-work': 'No work with the clerks',
+        'ordered': 'No indents with a PO or dispatch in progress',
+        'completed': 'No completed indents yet',
     };
+    const active = lists[activeTab];
 
     return React.createElement('div', { className: 'card' },
         React.createElement('div', { className: 'card-header' },
-            React.createElement('div', { className: 'card-title' }, 'In Progress Indents')
+            React.createElement('div', { className: 'card-title' }, 'Indents in Procurement')
         ),
-        React.createElement('div', { style: { borderBottom: '1px solid #e2e8f0', display: 'flex' } },
-            renderTab('My Work', 'my-work'),
-            renderTab('Clerk Work', 'clerk-work')
+        React.createElement('div', { style: { borderBottom: '1px solid #e2e8f0', display: 'flex', flexWrap: 'wrap' } },
+            renderTab('My Work', 'my-work', myWork.length),
+            renderTab('Clerk Work', 'clerk-work', clerkWork.length),
+            renderTab('Ordered / Dispatched', 'ordered', ordered.length),
+            renderTab('Completed', 'completed', completed.length)
         ),
-        activeTab === 'my-work' ? renderIndentTable(myWorkIndents, true, false) : null,
-        activeTab === 'clerk-work' ? renderIndentTable(clerkWorkIndents, false, true) : null,
-        dispatchModal ? React.createElement('div', {
-            style: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }
-        },
-            React.createElement('div', { style: { background: '#fff', borderRadius: '12px', padding: '24px', width: '500px', maxWidth: '90vw' } },
-                React.createElement('h3', { style: { marginBottom: '16px', fontSize: '18px', fontWeight: '700' } }, 'Dispatch Details'),
-                React.createElement('p', { style: { fontSize: '13px', color: '#64748b', marginBottom: '16px' } }, 'Fill in logistics details before dispatching.'),
-                React.createElement('div', { style: { display: 'grid', gap: '12px' } },
-                    React.createElement('div', null,
-                        React.createElement('label', { className: 'form-label' }, 'Vendor / Supplier Name *'),
-                        React.createElement('input', { type: 'text', className: 'form-input', value: dispatchVendor, onChange: (e) => setDispatchVendor(e.target.value), placeholder: 'Enter vendor name' })
-                    ),
-                    React.createElement('div', null,
-                        React.createElement('label', { className: 'form-label' }, 'Expected Delivery Date *'),
-                        React.createElement('input', { type: 'date', className: 'form-input', value: dispatchETA, onChange: (e) => setDispatchETA(e.target.value), min: new Date().toISOString().split('T')[0] })
-                    ),
-                    React.createElement('div', null,
-                        React.createElement('label', { className: 'form-label' }, 'Document / Invoice Reference'),
-                        React.createElement('input', { type: 'text', className: 'form-input', value: dispatchDocRef, onChange: (e) => setDispatchDocRef(e.target.value), placeholder: 'Invoice no., DC no., etc.' })
-                    ),
-                    React.createElement('div', null,
-                        React.createElement('label', { className: 'form-label' }, 'Dispatch Notes *'),
-                        React.createElement('textarea', { className: 'form-textarea', value: dispatchNotes, onChange: (e) => setDispatchNotes(e.target.value), placeholder: 'Transport details, quantity dispatched, etc.', style: { minHeight: '80px' } })
-                    )
-                ),
-                React.createElement('div', { style: { marginTop: '16px', display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
-                    React.createElement('button', { className: 'btn btn-secondary', onClick: () => setDispatchModal(null) }, 'Cancel'),
-                    React.createElement('button', { className: 'btn btn-success', onClick: handleConfirmDispatch }, 'Confirm Dispatch')
-                )
-            )
-        ) : null
+        React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, active.bar),
+        React.createElement(IndentWorkTable, {
+            indents: active.rows,
+            emptyText: active.term ? 'No indents match your search' : empty[activeTab],
+            actions: activeTab === 'my-work' ? workActions : null,
+        }),
+        dispatchIndentId ? React.createElement(DispatchModal, { indentId: dispatchIndentId, onClose: () => setDispatchIndentId(null) }) : null
     );
 }
 
@@ -387,126 +414,62 @@ function ProcurementProgressScreen() {
 
 function ClerkAssignedScreen() {
     const [state, dispatch] = React.useContext(AppContext);
+    const [activeTab, setActiveTab] = useState('todo');
+    const [dispatchIndentId, setDispatchIndentId] = useState(null);
+    const newestFirst = (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
 
-    const clerkIndents = state.indents.filter(i =>
-        i.assignedTo === state.currentUserId && i.status === 'in_procurement'
+    const mine = state.indents.filter(i => i.assignedTo === state.currentUserId);
+    const todo = mine.filter(i => i.status === 'in_procurement').sort(newestFirst);
+    const ordered = mine.filter(i => PROCUREMENT_OPEN_STAGES.includes(i.status) || i.status === 'escalated_to_md').sort(newestFirst);
+    const completed = mine.filter(i => i.status === 'completed').sort(newestFirst);
+
+    const fields = indentListFields(state);
+    const lists = {
+        todo: useListControls(todo, fields),
+        ordered: useListControls(ordered, fields),
+        completed: useListControls(completed, fields),
+    };
+
+    const renderTab = (label, tabKey, count) => React.createElement('button', {
+        onClick: () => setActiveTab(tabKey),
+        style: {
+            padding: '12px 20px', border: 'none', backgroundColor: 'transparent', cursor: 'pointer', fontSize: '14px',
+            fontWeight: activeTab === tabKey ? '600' : '500',
+            color: activeTab === tabKey ? '#2563eb' : '#64748b',
+            borderBottom: activeTab === tabKey ? '3px solid #2563eb' : '3px solid transparent',
+        }
+    }, label + ' (' + count + ')');
+
+    const workActions = (indent) => React.createElement('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
+        React.createElement('button', {
+            className: 'btn btn-sm btn-primary',
+            onClick: () => { window.location.hash = '#create-po/' + indent.id; }
+        }, 'Create PO'),
+        React.createElement('button', {
+            className: 'btn btn-sm btn-success',
+            onClick: () => setDispatchIndentId(indent.id)
+        }, 'Dispatch without PO')
     );
 
-    const getDaysPending = (createdAt) => {
-        const now = new Date();
-        const created = new Date(createdAt);
-        return Math.floor((now - created) / (1000 * 60 * 60 * 24));
-    };
-
-    const [clkDispatchModal, setClkDispatchModal] = useState(null);
-    const [clkDispatchVendor, setClkDispatchVendor] = useState('');
-    const [clkDispatchETA, setClkDispatchETA] = useState('');
-    const [clkDispatchNotes, setClkDispatchNotes] = useState('');
-    const [clkDispatchDocRef, setClkDispatchDocRef] = useState('');
-
-    const handleMarkDispatched = (indentId) => {
-        setClkDispatchModal(indentId);
-        setClkDispatchVendor('');
-        setClkDispatchETA('');
-        setClkDispatchNotes('');
-        setClkDispatchDocRef('');
-    };
-
-    const handleClkConfirmDispatch = () => {
-        if (!clkDispatchVendor.trim()) {
-            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Vendor name is required for dispatch', type: 'error' } });
-            return;
-        }
-        if (!clkDispatchETA) {
-            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Expected delivery date is required', type: 'error' } });
-            return;
-        }
-        if (!clkDispatchNotes.trim() && !clkDispatchDocRef.trim()) {
-            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide dispatch notes or document reference', type: 'error' } });
-            return;
-        }
-        dispatch({ type: 'MARK_DISPATCHED', payload: { indentId: clkDispatchModal, vendorName: clkDispatchVendor, expectedDelivery: clkDispatchETA, notes: clkDispatchNotes, docReference: clkDispatchDocRef } });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent dispatched with logistics details', type: 'success' } });
-        setClkDispatchModal(null);
-    };
+    const empty = { todo: 'No indents assigned to you', ordered: 'None of your indents has a PO or dispatch in progress', completed: 'No completed indents yet' };
+    const active = lists[activeTab];
 
     return React.createElement('div', { className: 'card' },
         React.createElement('div', { className: 'card-header' },
             React.createElement('div', { className: 'card-title' }, 'My Assigned Indents')
         ),
-        React.createElement('table', { className: 'table' },
-            React.createElement('thead', null,
-                React.createElement('tr', null,
-                    React.createElement('th', null, 'Indent No.'),
-                    React.createElement('th', null, 'Description'),
-                    React.createElement('th', null, 'Site'),
-                    React.createElement('th', null, 'Items'),
-                    React.createElement('th', null, 'Assigned Date'),
-                    React.createElement('th', null, 'Days Pending'),
-                    React.createElement('th', null, 'Actions')
-                )
-            ),
-            React.createElement('tbody', null,
-                clerkIndents.length === 0
-                    ? React.createElement('tr', null,
-                        React.createElement('td', { colSpan: '7', style: { textAlign: 'center', padding: '20px', color: '#64748b' } }, 'No indents assigned to you')
-                    )
-                    : clerkIndents.map(indent =>
-                        React.createElement('tr', { key: indent.id },
-                            React.createElement('td', null,
-                                React.createElement('a', { href: '#indent/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
-                            ),
-                            React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
-                            React.createElement('td', null, getSiteName(indent.siteId, state.sites)),
-                            React.createElement('td', null, indent.lineItems.length),
-                            React.createElement('td', null, new Date(indent.createdAt).toLocaleDateString()),
-                            React.createElement('td', null, getDaysPending(indent.createdAt)),
-                            React.createElement('td', null,
-                                React.createElement('div', { style: { display: 'flex', gap: '6px' } },
-                                    React.createElement('button', {
-                                        className: 'btn btn-sm btn-primary',
-                                        onClick: () => { window.location.hash = '#create-po/' + indent.id; }
-                                    }, 'Create PO'),
-                                    React.createElement('button', {
-                                        className: 'btn btn-sm btn-success',
-                                        onClick: () => handleMarkDispatched(indent.id)
-                                    }, 'Mark Dispatched')
-                                )
-                            )
-                        )
-                    )
-            )
+        React.createElement('div', { style: { borderBottom: '1px solid #e2e8f0', display: 'flex', flexWrap: 'wrap' } },
+            renderTab('To Do', 'todo', todo.length),
+            renderTab('Ordered / Dispatched', 'ordered', ordered.length),
+            renderTab('Completed', 'completed', completed.length)
         ),
-        clkDispatchModal ? React.createElement('div', {
-            style: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }
-        },
-            React.createElement('div', { style: { background: '#fff', borderRadius: '12px', padding: '24px', width: '500px', maxWidth: '90vw' } },
-                React.createElement('h3', { style: { marginBottom: '16px', fontSize: '18px', fontWeight: '700' } }, 'Dispatch Details'),
-                React.createElement('p', { style: { fontSize: '13px', color: '#64748b', marginBottom: '16px' } }, 'Fill in logistics details before dispatching.'),
-                React.createElement('div', { style: { display: 'grid', gap: '12px' } },
-                    React.createElement('div', null,
-                        React.createElement('label', { className: 'form-label' }, 'Vendor / Supplier Name *'),
-                        React.createElement('input', { type: 'text', className: 'form-input', value: clkDispatchVendor, onChange: (e) => setClkDispatchVendor(e.target.value), placeholder: 'Enter vendor name' })
-                    ),
-                    React.createElement('div', null,
-                        React.createElement('label', { className: 'form-label' }, 'Expected Delivery Date *'),
-                        React.createElement('input', { type: 'date', className: 'form-input', value: clkDispatchETA, onChange: (e) => setClkDispatchETA(e.target.value), min: new Date().toISOString().split('T')[0] })
-                    ),
-                    React.createElement('div', null,
-                        React.createElement('label', { className: 'form-label' }, 'Document / Invoice Reference'),
-                        React.createElement('input', { type: 'text', className: 'form-input', value: clkDispatchDocRef, onChange: (e) => setClkDispatchDocRef(e.target.value), placeholder: 'Invoice no., DC no., etc.' })
-                    ),
-                    React.createElement('div', null,
-                        React.createElement('label', { className: 'form-label' }, 'Dispatch Notes *'),
-                        React.createElement('textarea', { className: 'form-textarea', value: clkDispatchNotes, onChange: (e) => setClkDispatchNotes(e.target.value), placeholder: 'Transport details, quantity dispatched, etc.', style: { minHeight: '80px' } })
-                    )
-                ),
-                React.createElement('div', { style: { marginTop: '16px', display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
-                    React.createElement('button', { className: 'btn btn-secondary', onClick: () => setClkDispatchModal(null) }, 'Cancel'),
-                    React.createElement('button', { className: 'btn btn-success', onClick: handleClkConfirmDispatch }, 'Confirm Dispatch')
-                )
-            )
-        ) : null
+        React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, active.bar),
+        React.createElement(IndentWorkTable, {
+            indents: active.rows,
+            emptyText: active.term ? 'No indents match your search' : empty[activeTab],
+            actions: activeTab === 'todo' ? workActions : null,
+        }),
+        dispatchIndentId ? React.createElement(DispatchModal, { indentId: dispatchIndentId, onClose: () => setDispatchIndentId(null) }) : null
     );
 }
 
@@ -529,9 +492,13 @@ function ProcurementDashboardScreen() {
     var filterPriority = _filterPriority[0];
     var setFilterPriority = _filterPriority[1];
 
-    var _sortBy = useState('newest');
-    var sortBy = _sortBy[0];
-    var setSortBy = _sortBy[1];
+    var dashFiltered = (state.indents || []).filter(function(indent) {
+        if (filterStatus !== 'all' && indent.status !== filterStatus) return false;
+        if (filterSite !== 'all' && indent.siteId !== filterSite) return false;
+        if (filterPriority !== 'all' && indent.priority !== filterPriority) return false;
+        return true;
+    }).sort(function(a, b) { return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); });
+    var dashList = useListControls(dashFiltered, indentListFields(state));
 
     const now = new Date();
     const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -560,7 +527,7 @@ function ProcurementDashboardScreen() {
     const summaryCards = [
         { label: 'Awaiting Procurement', value: totalApproved, color: '#2563eb', route: '#procurement-approved' },
         { label: 'In Procurement', value: inProcurement, color: '#f59e0b', route: '#procurement-progress' },
-        { label: 'POs Pending MD', value: posPendingMD, color: '#ef4444', route: '#md-po-approvals' },
+        { label: 'POs Pending MD', value: posPendingMD, color: '#ef4444', route: '#procurement-pos' },
         { label: 'POs Issued (Month)', value: posIssuedThisMonth, color: '#10b981', route: '#procurement-pos' },
         { label: 'Dispatched (Month)', value: dispatchedThisMonth, color: '#8b5cf6', route: '#procurement-progress' },
     ];
@@ -591,13 +558,9 @@ function ProcurementDashboardScreen() {
               style: { padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }
             },
               React.createElement('option', { value: 'all' }, 'All Statuses'),
-              React.createElement('option', { value: 'pending_approval' }, 'Pending Approval'),
-              React.createElement('option', { value: 'approved' }, 'Approved'),
-              React.createElement('option', { value: 'in_procurement' }, 'In Procurement'),
-              React.createElement('option', { value: 'dispatched' }, 'Dispatched'),
-              React.createElement('option', { value: 'completed' }, 'Completed'),
-              React.createElement('option', { value: 'rejected' }, 'Rejected'),
-              React.createElement('option', { value: 'returned_for_revision' }, 'Returned for Revision')
+              ['pending_approval', 'approved', 'escalated_to_md', 'in_procurement', 'po_draft', 'pending_md_po_approval',
+               'po_approved', 'po_issued', 'dispatched', 'completed', 'rejected', 'returned_for_revision']
+                .map(function(st) { return React.createElement('option', { key: st, value: st }, statusLabel(st)); })
             )
           ),
           React.createElement('div', null,
@@ -626,19 +589,6 @@ function ProcurementDashboardScreen() {
               React.createElement('option', { value: 'low' }, 'Low')
             )
           ),
-          React.createElement('div', null,
-            React.createElement('label', { style: { fontSize: '12px', fontWeight: '600', display: 'block', marginBottom: '4px', color: '#374151' } }, 'Sort By'),
-            React.createElement('select', {
-              value: sortBy,
-              onChange: function(e) { setSortBy(e.target.value); },
-              style: { padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }
-            },
-              React.createElement('option', { value: 'newest' }, 'Newest First'),
-              React.createElement('option', { value: 'oldest' }, 'Oldest First'),
-              React.createElement('option', { value: 'priority' }, 'Priority (High to Low)'),
-              React.createElement('option', { value: 'status' }, 'Status')
-            )
-          ),
           React.createElement('div', { style: { alignSelf: 'flex-end' } },
             React.createElement('button', {
               className: 'btn btn-secondary',
@@ -647,7 +597,6 @@ function ProcurementDashboardScreen() {
                 setFilterStatus('all');
                 setFilterSite('all');
                 setFilterPriority('all');
-                setSortBy('newest');
               }
             }, 'Reset Filters')
           )
@@ -655,27 +604,13 @@ function ProcurementDashboardScreen() {
 
         // Filtered indent list
         (function() {
-          var filteredIndents = (state.indents || []).filter(function(indent) {
-            if (filterStatus !== 'all' && indent.status !== filterStatus) return false;
-            if (filterSite !== 'all' && indent.siteId !== filterSite) return false;
-            if (filterPriority !== 'all' && indent.priority !== filterPriority) return false;
-            return true;
-          });
-
-          var priorityOrder = { urgent: 0, normal: 1, low: 2 };
-
-          filteredIndents.sort(function(a, b) {
-            if (sortBy === 'newest') return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
-            if (sortBy === 'oldest') return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
-            if (sortBy === 'priority') return (priorityOrder[a.priority] || 99) - (priorityOrder[b.priority] || 99);
-            if (sortBy === 'status') return (a.status || '').localeCompare(b.status || '');
-            return 0;
-          });
+          var filteredIndents = dashList.rows;
 
           return React.createElement('div', { className: 'card', style: { marginBottom: '24px' } },
             React.createElement('div', { className: 'card-header' },
               React.createElement('div', { className: 'card-title' }, 'All Indents (' + filteredIndents.length + ')')
             ),
+            React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, dashList.bar),
             React.createElement('table', { className: 'table' },
               React.createElement('thead', null,
                 React.createElement('tr', null,
@@ -692,7 +627,7 @@ function ProcurementDashboardScreen() {
                   ? React.createElement('tr', null,
                       React.createElement('td', { colSpan: '6', style: { textAlign: 'center', padding: '20px', color: '#64748b' } }, 'No indents match filters')
                     )
-                  : filteredIndents.slice(0, 50).map(function(item) {
+                  : filteredIndents.slice(0, 200).map(function(item) {
                       return React.createElement('tr', {
                         key: item.id,
                         style: { cursor: 'pointer' },
@@ -883,7 +818,7 @@ function CreatePOScreen({ indentId }) {
             deliveryDate,
             paymentTerms,
             deliveryAddress: site ? site.name + ', ' + site.location : '',
-            remarks,
+            notes: remarks.trim(),
             status: 'draft',
             totalAmount: grandTotal,
             lineItems: indent.lineItems.map(li => {
@@ -905,9 +840,30 @@ function CreatePOScreen({ indentId }) {
         };
     };
 
+    const currentUser = state.users.find(u => u.id === state.currentUserId);
+    const isManager = currentUser && (currentUser.role === 'procurement_manager' || currentUser.role === 'admin');
+    const mdLimit = poApprovalLimit(state);
+    // Compared with the limit: this PO plus any other live PO on the same indent
+    const valueForLimit = poValueForLimit({ id: null, indentId: indent.id }, state, grandTotal);
+    const needsMD = valueForLimit > mdLimit;
+
+    const fail = (message) => { dispatch({ type: 'SHOW_TOAST', payload: { message, type: 'error' } }); return false; };
+
+    // Everything a PO needs before it can go to the MD or to the vendor
+    const checkComplete = () => {
+        if (!vendorId) return fail('Please select a vendor');
+        if (!indent.lineItems || indent.lineItems.length === 0) return fail('Cannot create PO — indent has no line items');
+        if (!deliveryDate) return fail('Delivery date is required');
+        if (!paymentTerms || paymentTerms.trim() === 'Custom:') return fail('Payment terms are required');
+        const noRate = indent.lineItems.find(li => !(itemRates[li.id] > 0));
+        if (noRate) return fail('Enter a rate for "' + noRate.description + '"');
+        if (!remarks.trim()) return fail('Remarks are required');
+        return true;
+    };
+
     const handleSaveDraft = () => {
-        if (!vendorId) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please select a vendor', type: 'error' } }); return; }
-        if (!indent.lineItems || indent.lineItems.length === 0) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Cannot create PO — indent has no line items', type: 'error' } }); return; }
+        if (!vendorId) { fail('Please select a vendor'); return; }
+        if (!indent.lineItems || indent.lineItems.length === 0) { fail('Cannot create PO — indent has no line items'); return; }
         const po = buildPO();
         dispatch({ type: 'CREATE_PO', payload: { po, indentId: indent.id } });
         dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO draft saved', type: 'success' } });
@@ -915,14 +871,22 @@ function CreatePOScreen({ indentId }) {
     };
 
     const handleRequestApproval = () => {
-        if (!vendorId) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please select a vendor', type: 'error' } }); return; }
-        if (!indent.lineItems || indent.lineItems.length === 0) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Cannot create PO — indent has no line items', type: 'error' } }); return; }
-        if (!deliveryDate) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Delivery Date / ETA is required before requesting approval', type: 'error' } }); return; }
-        if (!paymentTerms) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Payment Terms are required before requesting approval', type: 'error' } }); return; }
+        if (!checkComplete()) return;
         const po = buildPO();
         dispatch({ type: 'CREATE_PO', payload: { po, indentId: indent.id } });
         dispatch({ type: 'REQUEST_MD_PO_APPROVAL', payload: { poId: po.id, indentId: indent.id } });
         dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO sent for MD approval', type: 'success' } });
+        window.location.hash = '#procurement-pos';
+    };
+
+    // Within the limit: the procurement manager may issue without MD approval
+    const handleIssueDirect = () => {
+        if (!checkComplete()) return;
+        if (!window.confirm('Issue this PO to the vendor now, without MD approval?\n\nValue: ' + formatRs(grandTotal) + ' (limit ' + formatRs(mdLimit) + ')')) return;
+        const po = buildPO();
+        dispatch({ type: 'CREATE_PO', payload: { po, indentId: indent.id } });
+        dispatch({ type: 'ISSUE_PO', payload: { poId: po.id } });
+        dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO issued to vendor', type: 'success' } });
         window.location.hash = '#procurement-pos';
     };
 
@@ -958,7 +922,7 @@ function CreatePOScreen({ indentId }) {
             // Vendor + Delivery Date + Payment Terms
             React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '24px' } },
                 React.createElement('div', { className: 'form-group' },
-                    React.createElement('label', { className: 'form-label' }, 'Vendor'),
+                    React.createElement('label', { className: 'form-label' }, 'Vendor *'),
                     React.createElement('select', {
                         className: 'form-select', value: vendorId,
                         onChange: (e) => handleVendorChange(e.target.value)
@@ -971,9 +935,10 @@ function CreatePOScreen({ indentId }) {
                     )
                 ),
                 React.createElement('div', { className: 'form-group' },
-                    React.createElement('label', { className: 'form-label' }, 'Delivery Date / ETA'),
+                    React.createElement('label', { className: 'form-label' }, 'Delivery Date / ETA *'),
                     React.createElement('input', {
                         type: 'date', className: 'form-input', value: deliveryDate,
+                        min: new Date().toISOString().split('T')[0],
                         onChange: (e) => setDeliveryDate(e.target.value)
                     })
                 ),
@@ -1064,7 +1029,7 @@ function CreatePOScreen({ indentId }) {
                             React.createElement('th', null, 'Material'),
                             React.createElement('th', null, 'Qty'),
                             React.createElement('th', null, 'Unit'),
-                            React.createElement('th', null, 'Unit Rate (Rs.)'),
+                            React.createElement('th', null, 'Unit Rate (Rs.) *'),
                             React.createElement('th', null, 'Amount'),
                             React.createElement('th', null, 'GST %'),
                             React.createElement('th', null, 'GST Amount'),
@@ -1129,19 +1094,31 @@ function CreatePOScreen({ indentId }) {
 
             // Remarks
             React.createElement('div', { className: 'form-group' },
-                React.createElement('label', { className: 'form-label' }, 'Remarks'),
+                React.createElement('label', { className: 'form-label' }, 'Remarks *'),
                 React.createElement('textarea', {
                     className: 'form-textarea', value: remarks,
                     onChange: (e) => setRemarks(e.target.value),
-                    placeholder: 'Any additional notes...',
+                    placeholder: 'Basis of the rate, quotations compared, delivery instructions...',
                     style: { minHeight: '60px' }
                 })
+            ),
+
+            // Approval route for this value
+            React.createElement('div', {
+                style: { padding: '10px 14px', borderRadius: 8, marginBottom: 16, fontSize: 13,
+                         background: needsMD ? '#fef2f2' : '#f0fdf4', border: '1px solid ' + (needsMD ? '#fecaca' : '#bbf7d0'), color: '#1e293b' }
+            },
+                needsMD
+                    ? 'This order (' + formatRs(valueForLimit) + (valueForLimit !== grandTotal ? ' including other POs on this indent' : '') + ') is above the ' + formatRs(mdLimit) + ' limit: MD approval is required.'
+                    : 'This order (' + formatRs(valueForLimit) + ') is within the ' + formatRs(mdLimit) + ' limit: '
+                        + (isManager ? 'you can issue it directly, or send it to the MD if you prefer.' : 'the procurement manager can issue it directly, or you can send it to the MD.')
             ),
 
             // Action buttons
             React.createElement('div', { className: 'action-buttons' },
                 React.createElement('button', { className: 'btn btn-secondary', onClick: handleSaveDraft }, 'Save as Draft PO'),
-                React.createElement('button', { className: 'btn btn-primary', onClick: handleRequestApproval }, 'Request MD Approval'),
+                (!needsMD && isManager && grandTotal > 0) && React.createElement('button', { className: 'btn btn-success', onClick: handleIssueDirect }, 'Issue to Vendor'),
+                React.createElement('button', { className: 'btn btn-primary', onClick: handleRequestApproval }, needsMD ? 'Send for MD Approval' : 'Send for MD Approval anyway'),
                 React.createElement('button', { className: 'btn btn-secondary', onClick: () => { window.location.hash = '#procurement-progress'; } }, 'Cancel')
             )
         )
@@ -1160,17 +1137,34 @@ function ProcurementPOsScreen() {
     var setStatusFilter = _statusFilter[1];
 
     var allPOs = (state.purchaseOrders || []).slice().sort(function(a, b) { return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); });
-    var myPOs = statusFilter ? allPOs.filter(function(po) { return po.status === statusFilter; }) : allPOs;
+    var poList = useListControls(statusFilter ? allPOs.filter(function(po) { return po.status === statusFilter; }) : allPOs, poListFields(state));
+    var myPOs = poList.rows;
+    var currentUser = state.users.find(function(u) { return u.id === state.currentUserId; });
+    var isManager = currentUser && (currentUser.role === 'procurement_manager' || currentUser.role === 'admin');
+    // Only procurement acts on POs here; the MD and others get a read-only list
+    var canManage = currentUser && (currentUser.role === 'procurement_manager' || currentUser.role === 'procurement_clerk' || currentUser.role === 'admin');
 
-    const handleFinalize = (poId) => {
-        dispatch({ type: 'FINALIZE_PO', payload: { poId } });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO finalized and issued', type: 'success' } });
+    // Send a draft to the MD, or issue it; the screen says what is missing first
+    const sendOrIssue = (po, direct) => {
+        var missing = poMissingFields(po);
+        if (missing.length > 0) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: getPODisplayId(po) + ' is missing: ' + missing.slice(0, 3).join(', ') + '. Open the PO and edit it.', type: 'error' } });
+            return;
+        }
+        if (direct) {
+            if (!window.confirm('Issue ' + getPODisplayId(po) + ' (' + formatRs(po.totalAmount) + ') to the vendor' + (po.status === 'draft' ? ' without MD approval' : '') + '?')) return;
+            dispatch({ type: 'ISSUE_PO', payload: { poId: po.id } });
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO issued to vendor', type: 'success' } });
+        } else {
+            dispatch({ type: 'SUBMIT_PO_FOR_APPROVAL', payload: { poId: po.id } });
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO sent for MD approval', type: 'success' } });
+        }
     };
 
     const handlePrintPO = (po) => {
         const vendor = state.vendors.find(v => v.id === po.vendorId);
         const printContent = [
-            '<html><head><title>Purchase Order - ' + po.id + '</title>',
+            '<html><head><title>Purchase Order - ' + getPODisplayId(po) + '</title>',
             '<style>',
             'body { font-family: Arial, sans-serif; padding: 40px; color: #333; }',
             'h1 { font-size: 24px; border-bottom: 2px solid #333; padding-bottom: 10px; }',
@@ -1203,11 +1197,15 @@ function ProcurementPOsScreen() {
             ).join(''),
             '<tr class="total-row"><td colspan="7" style="text-align:right">Grand Total:</td><td>Rs. ' + (po.totalAmount || 0).toLocaleString() + '</td></tr>',
             '</tbody></table>',
-            po.remarks ? '<p><strong>Remarks:</strong> ' + po.remarks + '</p>' : '',
+            po.notes ? '<p><strong>Remarks:</strong> ' + escapeHtml(po.notes) + '</p>' : '',
             '</body></html>'
         ].join('');
 
         const printWindow = window.open('', '_blank');
+        if (!printWindow) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'The browser blocked the print window. Allow pop-ups for this site and try again.', type: 'error' } });
+            return;
+        }
         printWindow.document.write(printContent);
         printWindow.document.close();
         printWindow.focus();
@@ -1224,13 +1222,13 @@ function ProcurementPOsScreen() {
                     style: { padding: '6px 12px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 },
                 },
                     React.createElement('option', { value: '' }, 'All Statuses'),
-                    ['draft', 'pending_approval', 'approved', 'issued', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled', 'amendment_pending'].map(function(s) {
-                        return React.createElement('option', { key: s, value: s }, s.replace(/_/g, ' '));
+                    ['draft', 'pending_approval', 'approved', 'issued', 'partially_fulfilled', 'fulfilled', 'closed', 'cancelled'].map(function(s) {
+                        return React.createElement('option', { key: s, value: s }, statusLabel(s));
                     })
-                ),
-                React.createElement('span', { style: { fontSize: 12, color: '#64748b' } }, myPOs.length + ' POs')
+                )
             )
         ),
+        React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, poList.bar),
         React.createElement('table', { className: 'table' },
             React.createElement('thead', null,
                 React.createElement('tr', null,
@@ -1247,7 +1245,7 @@ function ProcurementPOsScreen() {
             React.createElement('tbody', null,
                 myPOs.length === 0
                     ? React.createElement('tr', null,
-                        React.createElement('td', { colSpan: '8', style: { textAlign: 'center', padding: '20px', color: '#64748b' } }, 'No purchase orders yet')
+                        React.createElement('td', { colSpan: '8', style: { textAlign: 'center', padding: '20px', color: '#64748b' } }, (poList.term || statusFilter) ? 'No purchase orders match' : 'No purchase orders yet')
                     )
                     : myPOs.map(po =>
                         React.createElement('tr', { key: po.id },
@@ -1262,34 +1260,27 @@ function ProcurementPOsScreen() {
                             React.createElement('td', null, new Date(po.createdAt).toLocaleDateString()),
                             React.createElement('td', null,
                                 React.createElement('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap' } },
-                                    po.status === 'draft' && React.createElement('button', {
+                                    // Draft within the limit: the manager may issue it directly
+                                    (po.status === 'draft' && isManager && !poNeedsMD(po, state)) && React.createElement('button', {
                                         className: 'btn btn-sm btn-success',
-                                        onClick: function() {
-                                            dispatch({ type: 'SUBMIT_PO_FOR_APPROVAL', payload: { poId: po.id } });
-                                            dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO submitted for approval', type: 'success' } });
-                                        }
-                                    }, 'Submit'),
-                                    po.status === 'approved' && React.createElement('button', {
+                                        onClick: function() { sendOrIssue(po, true); }
+                                    }, 'Issue to Vendor'),
+                                    (canManage && po.status === 'draft') && React.createElement('button', {
+                                        className: 'btn btn-sm btn-primary',
+                                        onClick: function() { sendOrIssue(po, false); }
+                                    }, 'Send to MD'),
+                                    (canManage && po.status === 'approved') && React.createElement('button', {
                                         className: 'btn btn-sm btn-success',
-                                        onClick: function() {
-                                            dispatch({ type: 'ISSUE_PO', payload: { poId: po.id } });
-                                            dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO issued', type: 'success' } });
-                                        }
-                                    }, 'Issue'),
-                                    po.status === 'approved'
-                                        ? React.createElement('button', {
-                                            className: 'btn btn-sm btn-success',
-                                            onClick: () => handleFinalize(po.id)
-                                        }, 'Finalize & Issue')
-                                        : null,
+                                        onClick: function() { sendOrIssue(po, true); }
+                                    }, 'Issue to Vendor'),
                                     (po.status === 'issued' || po.status === 'partially_fulfilled')
                                         ? React.createElement('button', {
                                             className: 'btn btn-sm btn-primary',
                                             onClick: () => handlePrintPO(po),
                                         }, 'Print')
                                         : null,
-                                    po.status === 'rejected' && po.mdRejectReason
-                                        ? React.createElement('span', { style: { fontSize: '12px', color: '#991b1b' } }, 'Rejected: ' + po.mdRejectReason)
+                                    (po.status === 'draft' && /^MD Rejected/.test(po.mdRejectReason || ''))
+                                        ? React.createElement('span', { style: { fontSize: '12px', color: '#991b1b' } }, po.mdRejectReason)
                                         : null,
                                     React.createElement('a', {
                                         href: '#po/' + po.id,
@@ -1312,6 +1303,13 @@ function ProcurementPOsScreen() {
 function VendorScreen() {
     const [state, dispatch] = React.useContext(AppContext);
     const [showForm, setShowForm] = useState(false);
+    const vendorList = useListControls(state.vendors || [], [
+        { key: 'name', label: 'Name', get: v => v.name },
+        { key: 'category', label: 'Category', get: v => v.category },
+        { key: 'city', label: 'City', get: v => v.city },
+        { key: 'contact', label: 'Contact person', get: v => [v.contactPerson, v.phone, v.email] },
+        { key: 'gstin', label: 'GSTIN', get: v => v.gstin },
+    ], { placeholder: 'Search vendor name, category, city, contact, GSTIN…' });
     const [editingId, setEditingId] = useState(null);
     const [expandedId, setExpandedId] = useState(null);
     const emptyVendor = {
@@ -1457,6 +1455,7 @@ function VendorScreen() {
         showForm && !editingId ? renderVendorForm(false) : null,
         editingId && !showForm ? renderVendorForm(true) : null,
 
+        React.createElement('div', { style: { padding: '12px 16px 0 16px' } }, vendorList.bar),
         React.createElement('table', { className: 'table' },
             React.createElement('thead', null,
                 React.createElement('tr', null,
@@ -1470,7 +1469,7 @@ function VendorScreen() {
                 )
             ),
             React.createElement('tbody', null,
-                state.vendors.map(v =>
+                vendorList.rows.map(v =>
                     React.createElement(React.Fragment, { key: v.id },
                         React.createElement('tr', null,
                             React.createElement('td', { style: { fontWeight: '600' } }, v.name),

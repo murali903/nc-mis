@@ -48,6 +48,7 @@ same function and gets the same checks.
 | `js/state/reducer.js` | In-memory app state and how each action changes it. |
 | `js/lib/helpers.js` | Small shared helpers (names, numbers, printing a GRN). |
 | `js/components/shell.js` | Login page, top bar with notifications, side menu, shared widgets. |
+| `js/components/list-controls.js` | Search + sort bar used on every list, the unit list, file attachments, and the PO approval-limit helpers. |
 | `js/screens/*.js` | One file per area: admin, engineer, project manager, procurement, MD, store, reports, indent and PO detail pages. |
 | `js/app.js` | Routing, the save queue, realtime refresh, app start-up. |
 | `supabase/migrations/` | Every database change, in the order it was applied. |
@@ -65,6 +66,26 @@ in the order listed in `index.html`**. There is no build step yet.
 
 Schemas: `core` holds data shared across MIS modules (profiles, sites, offices,
 vendors, site assignments, settings). `indent_flow` holds this module's data.
+
+## Approval rules (enforced in the database)
+
+- A project manager cannot approve, reject or return an indent they raised; the
+  MD decides it.
+- The MD must give remarks on every decision (indent or PO, approve or reject).
+- A PO needs a vendor, a delivery date, remarks, and a quantity and rate above
+  zero on every item before it can be sent to the MD or issued.
+- MD approval of a PO is compulsory only above the limit in Organisation
+  Settings (`po_md_approval_threshold`, Rs. 50,000 to start with, compared with
+  the total of all live POs on the same indent). At or below it the procurement
+  manager may issue directly; the MD is notified.
+- Closing a PO needs remarks and is done by the procurement manager.
+- A receipt (against an indent or a PO) needs a photo or remarks.
+
+## Files attached to indents
+
+Stored in the private storage bucket `indent-docs`, one folder per indent, and
+listed in `indent_flow.indent_documents` (optionally pointing at one line item).
+They are opened through short-lived signed links.
 
 ## Roles
 

@@ -1,4 +1,29 @@
 
+// Actions whose result is decided by a database function
+var WORKFLOW_ACTIONS = {
+    SUBMIT_INDENT: 1, APPROVE_INDENT: 1, REJECT_INDENT: 1, RETURN_FOR_REVISION: 1, ESCALATE_TO_MD: 1,
+    ASSIGN_INDENT: 1, REVISE_RESUBMIT: 1, SUBMIT_DRAFT: 1, MARK_DISPATCHED: 1, BULK_APPROVE: 1,
+    MD_ESCALATION_APPROVE: 1, MD_ESCALATION_DISMISS: 1,
+    CREATE_PO: 1, UPDATE_PO: 1, SUBMIT_PO_FOR_APPROVAL: 1, REQUEST_MD_PO_APPROVAL: 1,
+    MD_APPROVE_PO: 1, APPROVE_PO: 1, MD_REJECT_PO: 1, REJECT_PO: 1, ISSUE_PO: 1, FINALIZE_PO: 1,
+    AMEND_PO: 1, CLOSE_PO: 1, CANCEL_PO: 1, ADD_DOCUMENT: 1, DELETE_DOCUMENT: 1,
+};
+
+// Row for indent_flow.indent_documents from a document object
+function documentRow(doc, indentId, userId) {
+    return {
+        id: asUUID(doc.id),
+        indent_id: indentId,
+        file_name: doc.name,
+        category: doc.category || 'Other',
+        storage_path: doc.storagePath || '',
+        uploaded_by: userId,
+        size: doc.size || 0,
+        mime_type: doc.mimeType || doc.type || '',
+        line_item_id: doc.lineItemId || null,
+    };
+}
+
 async function supabaseSync(action, state, postState) {
     try {
         switch (action.type) {
@@ -63,10 +88,17 @@ async function supabaseSync(action, state, postState) {
                     note: '',
                 }), 'insert activity');
 
+                // Attachments chosen on the create screen (already uploaded to storage)
+                if (indent.documents && indent.documents.length > 0) {
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_documents').insert(
+                        indent.documents.map(function(d) { return documentRow(d, indent.id, indent.createdBy); })
+                    ), 'save attachments');
+                }
+
                 if (indent.status === 'pending_approval') {
                     await callFlow('indent_submit', { p_indent_id: indent.id });
                 }
-                console.log('[NC_MIS] Indent ' + indent.id + ' synced to Supabase successfully');
+                action._reload = true;   // the indent number is assigned by the database
                 break;
             }
 
@@ -155,16 +187,8 @@ async function supabaseSync(action, state, postState) {
 
             case 'ADD_DOCUMENT': {
                 var doc = action.payload.document;
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_documents').insert({
-                    id: doc.id,
-                    indent_id: action.payload.indentId,
-                    file_name: doc.name,
-                    category: doc.category || '',
-                    storage_path: doc.storagePath || doc.data || '',
-                    uploaded_by: state.currentUserId,
-                    size: doc.size || 0,
-                    mime_type: doc.mimeType || '',
-                }), 'add document');
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_documents').insert(
+                    documentRow(doc, action.payload.indentId, state.currentUserId)), 'add document');
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
@@ -176,8 +200,12 @@ async function supabaseSync(action, state, postState) {
             }
 
             case 'DELETE_DOCUMENT': {
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_documents')
-                    .delete().eq('id', action.payload.documentId), 'delete document');
+                var _delDoc = await supabaseClient.schema('indent_flow').from('indent_documents')
+                    .delete().eq('id', action.payload.documentId).select('id');
+                sbCheck(_delDoc, 'delete document');
+                if (!_delDoc.data || _delDoc.data.length === 0) {
+                    throw new Error('You are not allowed to remove this file (only the person who attached it can)');
+                }
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
@@ -285,7 +313,7 @@ async function supabaseSync(action, state, postState) {
 
             case 'MD_APPROVE_PO':
             case 'APPROVE_PO': {
-                await callFlow('po_approve', { p_po_id: action.payload.poId });
+                await callFlow('po_approve', { p_po_id: action.payload.poId, p_remarks: action.payload.remarks || '' });
                 break;
             }
 
@@ -307,7 +335,7 @@ async function supabaseSync(action, state, postState) {
             }
 
             case 'CLOSE_PO': {
-                await callFlow('po_close', { p_po_id: action.payload.poId });
+                await callFlow('po_close', { p_po_id: action.payload.poId, p_remarks: action.payload.remarks || '' });
                 break;
             }
 
@@ -360,6 +388,7 @@ async function supabaseSync(action, state, postState) {
                         };
                     }),
                     p_photo_url: action.payload.photoUrl || '',
+                    p_remarks: action.payload.remarks || '',
                 });
                 action._reload = true;
                 break;
@@ -752,6 +781,10 @@ async function supabaseSync(action, state, postState) {
 
         // Notifications are created by the database functions (indent_* / po_*), so
         // nothing is written here for the in-memory ones the reducer produces.
+
+        // After a workflow action the screen is reloaded from the database, so it
+        // always shows exactly what was saved (status, timeline, numbers).
+        if (WORKFLOW_ACTIONS[action.type]) action._reload = true;
 
     } catch (err) {
         console.error('[NC_MIS] Sync error for ' + action.type + ':', err);
