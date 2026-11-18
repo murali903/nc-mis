@@ -155,9 +155,9 @@ function UserManagementScreen() {
     dispatch({ type: 'ADD_USER', payload: { user: newUser, siteIds: addSiteIds.slice(), password: addPassword } });
     dispatch({ type: 'SHOW_TOAST', payload: {
       message: addPassword
-        ? 'Creating ' + addName.trim() + ' with the temporary password...'
-        : 'Creating ' + addName.trim() + ' and sending an email invitation...',
-      type: 'info' } });
+        ? addName.trim() + ' created. Share the temporary password with them.'
+        : addName.trim() + ' created. An email invitation has been sent.',
+      type: 'success' } });
     setAddPassword('');
 
     // Reset form

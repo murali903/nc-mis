@@ -21,7 +21,9 @@ function IndentDetail({ indentId }) {
   }
 
   const handleClone = () => {
-    dispatch({ type: 'CLONE_INDENT', payload: { indentId: indent.id, userId: user.id } });
+    // "Create Similar": copies the items into a new draft for this user
+    dispatch({ type: 'CLONE_INDENT', payload: { sourceIndentId: indent.id, clonedBy: user.id } });
+    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Draft created from ' + getIndentDisplayId(indent, state.indents), type: 'success' } });
     window.location.hash = '#my-indents';
   };
 

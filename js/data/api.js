@@ -129,21 +129,6 @@ async function safeIndentUpdate(indentId, fields, label) {
     return res;
 }
 
-// Keeps the linked indent's status in step with its PO. The PO row is the source
-// of truth, so a status the indents check constraint does not allow yet is logged
-// (with the fix) instead of failing the whole action.
-async function syncIndentStatusForPO(poId, indentStatus, label, indentId) {
-    var q = supabaseClient.schema('indent_flow').from('indents').update({ status: indentStatus });
-    q = indentId ? q.eq('id', indentId) : q.eq('linked_po', poId);
-    var res = await q;
-    if (res.error && res.error.code === '23514') {
-        console.error('[NC_MIS] Indent status "' + indentStatus + '" is not allowed by the indents_status_check constraint (' + label + '). Run the indent status migration SQL in Supabase.');
-        return res;
-    }
-    sbCheck(res, label);
-    return res;
-}
-
 // Updates a PO row and fails loudly when nothing was updated (row missing because an
 // earlier save failed, or the signed-in role is not allowed to change it). Without the
 // row check Supabase reports success for an update that touched zero rows.

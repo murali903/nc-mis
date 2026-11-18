@@ -299,11 +299,6 @@ function IndentActionButtons(_ref) {
     dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent self-assigned', type: 'success' } });
   };
 
-  var handleMarkDispatched = function() {
-    dispatch({ type: 'MARK_DISPATCHED', payload: indent.id });
-    dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent marked as dispatched', type: 'success' } });
-  };
-
   var buttonWrap = { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '16px' };
 
   // Site engineer + draft — allow submit for approval

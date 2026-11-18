@@ -45,35 +45,8 @@ function indentNo(indentOrId, state) {
     return getIndentDisplayId(ind, list);
 }
 
-// Notifications for PO milestones: 'awaiting' -> MD, 'approved'/'rejected' -> PO creator,
-// 'issued' -> storekeepers of the indent's site. Never notifies the person acting.
-function poNotifs(state, poId, kind, reason) {
-    var po = (state.purchaseOrders || []).find(function(p) { return p.id === poId; });
-    if (!po) return [];
-    var num = getPODisplayId(po);
-    var users = state.users || [];
-    var out = [];
-    if (kind === 'awaiting') {
-        users.filter(function(u) { return u.role === 'md'; }).forEach(function(u) {
-            out.push(createNotification(u.id, null, 'PO ' + num + ' is awaiting your approval', '#md-po-approvals', 'PO approval needed'));
-        });
-    } else if (kind === 'approved' || kind === 'rejected') {
-        if (po.createdBy) {
-            out.push(createNotification(po.createdBy, null,
-                kind === 'approved' ? 'PO ' + num + ' was approved by MD and can be issued' : 'PO ' + num + ' was rejected by MD' + (reason ? ': ' + reason : ''),
-                '#po/' + po.id, kind === 'approved' ? 'PO approved' : 'PO rejected'));
-        }
-    } else if (kind === 'issued') {
-        var ind = (state.indents || []).find(function(i) { return i.id === po.indentId; });
-        var sa = state.siteAssignments || {};
-        users.filter(function(u) {
-            return u.role === 'storekeeper' && (!ind || (sa[u.id] || []).indexOf(ind.siteId) !== -1);
-        }).forEach(function(u) {
-            out.push(createNotification(u.id, null, 'PO ' + num + ' issued' + (po.deliveryDate ? ' — delivery expected ' + po.deliveryDate : ''), '#po/' + po.id, 'Delivery expected'));
-        });
-    }
-    return out.filter(function(n) { return n.userId && n.userId !== state.currentUserId; });
-}
+// PO and indent notifications are created by the database functions
+// (indent_flow.po_* / indent_* ), not here.
 
 function createActivityLogEntry(action, by, note) {
     return {
@@ -115,6 +88,9 @@ function appReducer(state, action) {
 
         case 'SET_AUTHENTICATED':
             return Object.assign({}, state, { isAuthenticated: action.payload });
+
+        case 'SET_SAVING':
+            return Object.assign({}, state, { savingCount: Math.max(0, (state.savingCount || 0) + (action.payload || 0)) });
 
         case 'SET_OFFLINE':
             return Object.assign({}, state, { isOffline: action.payload });
@@ -866,7 +842,6 @@ function appReducer(state, action) {
                         }
                         : ind
                 ),
-                notifications: (state.notifications || []).concat(poNotifs(state, action.payload.poId, 'approved')),
             };
 
         case 'MD_REJECT_PO':
@@ -886,7 +861,6 @@ function appReducer(state, action) {
                         }
                         : ind
                 ),
-                notifications: (state.notifications || []).concat(poNotifs(state, action.payload.poId, 'rejected', action.payload.reason)),
             };
 
         case 'FINALIZE_PO':
@@ -906,7 +880,6 @@ function appReducer(state, action) {
                         }
                         : ind
                 ),
-                notifications: (state.notifications || []).concat(poNotifs(state, action.payload.poId, 'issued')),
             };
 
         case 'RETURN_FOR_REVISION':
@@ -1046,7 +1019,6 @@ function appReducer(state, action) {
                         ? Object.assign({}, ind, { status: 'pending_md_po_approval', activityLog: addActivityLog(ind, 'PO Submitted for MD Approval', state.currentUserId, 'PO ' + action.payload.poId) })
                         : ind;
                 }),
-                notifications: (state.notifications || []).concat(poNotifs(state, action.payload.poId, 'awaiting')),
             };
         }
 
@@ -1095,7 +1067,6 @@ function appReducer(state, action) {
                         ? Object.assign({}, ind, { status: 'po_issued', activityLog: addActivityLog(ind, 'PO Issued to Vendor', state.currentUserId, 'PO ' + action.payload.poId + ' issued') })
                         : ind;
                 }),
-                notifications: (state.notifications || []).concat(poNotifs(state, action.payload.poId, 'issued')),
             };
         }
 
@@ -1220,7 +1191,6 @@ function appReducer(state, action) {
                         ? Object.assign({}, ind, { status: 'pending_md_po_approval', activityLog: addActivityLog(ind, 'PO Submitted for MD Approval', state.currentUserId, 'PO ' + action.payload.poId) })
                         : ind;
                 }),
-                notifications: (state.notifications || []).concat(poNotifs(state, action.payload.poId, 'awaiting')),
             };
         }
 

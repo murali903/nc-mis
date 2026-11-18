@@ -17,6 +17,15 @@ function OfflineBanner() {
     );
 }
 
+// Actions that only change what is on screen and are never saved
+var LOCAL_ONLY_ACTIONS = {
+    LOGIN_AS_USER: 1, LOGOUT: 1, NAVIGATE: 1, SHOW_TOAST: 1, HIDE_TOAST: 1, LOAD_DATA: 1,
+    SET_LOADING: 1, SET_AUTHENTICATED: 1, SET_OFFLINE: 1, SET_SAVING: 1,
+    REFRESH_INDENTS: 1, REFRESH_POS: 1, LOG_ACTIVITY: 1, ADD_NOTIFICATION: 1,
+};
+// Actions shown immediately and saved in the background
+var OPTIMISTIC_ACTIONS = { MARK_NOTIFICATION_READ: 1 };
+
 function App() {
     var _reducer = useReducer(appReducer, initialState);
     var state = _reducer[0];
@@ -41,36 +50,78 @@ function App() {
         });
     };
 
+    // ------------------------------------------------------------------
+    // dispatch: save first, then show.
+    //   * Local-only actions (navigation, toasts, loading flags) apply at once.
+    //   * Every other action is saved to the database first, one at a time and in
+    //     order. Only when the save succeeds is the screen updated; if it is
+    //     refused, the user sees the reason and nothing on screen changes.
+    //   * A success message or timeline note dispatched right after an action
+    //     waits for that action, and is dropped if the action was refused.
+    //   * Actions dispatched together (e.g. create PO + request approval) form
+    //     one batch: if an earlier one is refused, the later ones are skipped.
+    // ------------------------------------------------------------------
+    var batchRef = useRef(null);
+
     var dispatch = useCallback(function(action) {
-        var entry = { ts: new Date().toISOString(), type: action.type, userId: stateRef.current.currentUserId };
+        var type = action.type;
+        var entry = { ts: new Date().toISOString(), type: type, userId: stateRef.current.currentUserId };
         if (action.payload && action.payload.indentId) entry.indentId = action.payload.indentId;
         if (action.payload && action.payload.poId) entry.poId = action.payload.poId;
         window.NC_MIS_LOG = window.NC_MIS_LOG || [];
         window.NC_MIS_LOG.push(entry);
         if (window.NC_MIS_LOG.length > 500) window.NC_MIS_LOG = window.NC_MIS_LOG.slice(-500);
-        try { rawDispatch(action); } catch(e) {
-            entry.error = e.message;
-            console.error('[NC_MIS] Dispatch error:', e);
-            throw e;
+
+        var batch = batchRef.current;
+
+        // 1. Local-only actions
+        if (LOCAL_ONLY_ACTIONS[type]) {
+            var follows = batch && (type === 'LOG_ACTIVITY' ||
+                (type === 'SHOW_TOAST' && action.payload && action.payload.type !== 'error'));
+            if (!follows) { rawDispatch(action); return; }
+            syncQueueRef.current = syncQueueRef.current.then(function() {
+                if (!batch.failed) rawDispatch(action);
+            });
+            return;
         }
 
-        // Sync to Supabase in the background, queued behind earlier syncs.
-        // preState is the state before this action; the short wait lets React
-        // re-render so stateRef.current is the state after it.
-        var preState = stateRef.current;
+        // 2. Small actions where showing first is harmless (e.g. marking a notification read)
+        if (OPTIMISTIC_ACTIONS[type]) {
+            rawDispatch(action);
+            syncQueueRef.current = syncQueueRef.current.then(function() {
+                return supabaseSync(action, stateRef.current);
+            }).catch(function(err) {
+                entry.error = err.message;
+                console.error('[NC_MIS] Save failed for ' + type + ':', err);
+            });
+            return;
+        }
+
+        // 3. Everything else: save, then show
+        if (!batch) {
+            batch = batchRef.current = { failed: false };
+            // The batch covers actions dispatched in the same click; close it afterwards
+            Promise.resolve().then(function() { if (batchRef.current === batch) batchRef.current = null; });
+        }
+        rawDispatch({ type: 'SET_SAVING', payload: 1 });
         syncQueueRef.current = syncQueueRef.current.then(function() {
+            // Let React render the result of the previous save so stateRef is current
             return new Promise(function(resolve) { setTimeout(resolve, 25); });
         }).then(function() {
-            return supabaseSync(action, preState, stateRef.current);
-        }).then(function() {
-            // Some saves produce values only the database knows (e.g. a GRN number)
-            if (action._reload) return reloadFromDb();
+            if (batch.failed) return;   // an earlier step of the same user action was refused
+            return supabaseSync(action, stateRef.current).then(function() {
+                // Some saves produce values only the database knows (a GRN number, a
+                // new user's id): show what the database now holds.
+                if (action._reload) return reloadFromDb();
+                rawDispatch(action);
+            });
         }).catch(function(err) {
-            console.error('[NC_MIS] Sync failed for ' + action.type + ':', err);
+            batch.failed = true;
+            entry.error = err.message;
+            console.error('[NC_MIS] Save failed for ' + type + ':', err);
             rawDispatch({ type: 'SHOW_TOAST', payload: { message: 'Not saved: ' + err.message, type: 'error' } });
-            // The screen already shows the change; reload from the database so it
-            // goes back to what is actually saved.
-            return reloadFromDb();
+        }).then(function() {
+            rawDispatch({ type: 'SET_SAVING', payload: -1 });
         });
     }, []);
 
@@ -357,8 +408,6 @@ function App() {
         screenContent = React.createElement(SitesScreen, null);
     } else if (routeInfo.screen === 'assignments') {
         screenContent = React.createElement(AssignmentsScreen, null);
-    } else if (routeInfo.screen === 'users') {
-        screenContent = React.createElement(UsersScreen, null);
     } else if (routeInfo.screen === 'procurement-approved') {
         screenContent = React.createElement(ProcurementApprovedScreen, null);
     } else if (routeInfo.screen === 'procurement-progress') {
@@ -409,6 +458,19 @@ function App() {
 
     return React.createElement(AppContext.Provider, { value: [state, dispatch] },
         state.isOffline ? React.createElement(OfflineBanner, null) : null,
+        // While a save is in progress: block further clicks and say so
+        state.savingCount > 0 ? React.createElement('div', {
+            style: { position: 'fixed', inset: 0, zIndex: 3000, cursor: 'progress' }
+        },
+            React.createElement('div', {
+                role: 'status',
+                style: {
+                    position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+                    background: '#1e293b', color: '#fff', padding: '8px 20px', borderRadius: 20,
+                    fontSize: 13, fontWeight: 600, boxShadow: '0 4px 14px rgba(0,0,0,0.3)',
+                }
+            }, 'Saving...')
+        ) : null,
         React.createElement('div', { className: 'app-container', style: state.isOffline ? { marginTop: 36 } : {} },
             React.createElement(Sidebar, {
                 currentRoute: state.currentRoute,

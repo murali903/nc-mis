@@ -392,10 +392,8 @@ async function supabaseSync(action, state, postState) {
             }
 
             case 'CLONE_INDENT': {
-                // The reducer creates the clone in state, we need to sync it
-                // The cloned indent will be in state after reducer runs
-                // We'll insert it on next tick by reading from state
-                // Actually we can construct it here
+                // Copies an existing indent's items into a new draft. The new id and
+                // number come from this insert, so the screen reloads afterwards.
                 var sourceIndent = (state.indents || []).find(function(i) { return i.id === action.payload.sourceIndentId; });
                 if (sourceIndent) {
                     var clonedBy = action.payload.clonedBy || state.currentUserId;
@@ -426,8 +424,11 @@ async function supabaseSync(action, state, postState) {
                         indent_id: cloneId,
                         action: 'Created',
                         user_id: clonedBy,
-                        note: 'Cloned from ' + sourceIndent.id,
+                        note: 'Copied from ' + (sourceIndent.displayNumber || 'another indent'),
                     }), 'clone activity');
+                    action._reload = true;
+                } else {
+                    throw new Error('The indent to copy from was not found');
                 }
                 break;
             }
