@@ -710,6 +710,10 @@ function CreatePOScreen({ indentId }) {
     const [remarks, setRemarks] = useState('');
     const [itemRates, setItemRates] = useState({});
     const [itemGst, setItemGst] = useState({});
+    const [quotes, setQuotes] = useState([]);
+    const [noQuote, setNoQuote] = useState(false);
+    const [noQuoteReason, setNoQuoteReason] = useState('');
+    const [uploading, setUploading] = useState(false);
 
     if (!indent) return React.createElement('div', { className: 'placeholder-screen' }, 'Indent not found');
 
@@ -819,6 +823,7 @@ function CreatePOScreen({ indentId }) {
             paymentTerms,
             deliveryAddress: site ? site.name + ', ' + site.location : '',
             notes: remarks.trim(),
+            noQuoteReason: noQuote ? noQuoteReason.trim() : '',
             status: 'draft',
             totalAmount: grandTotal,
             lineItems: indent.lineItems.map(li => {
@@ -858,36 +863,50 @@ function CreatePOScreen({ indentId }) {
         const noRate = indent.lineItems.find(li => !(itemRates[li.id] > 0));
         if (noRate) return fail('Enter a rate for "' + noRate.description + '"');
         if (!remarks.trim()) return fail('Remarks are required');
+        const hasQuote = quotes.some(q => QUOTE_CATEGORIES.includes(q.category));
+        if (noQuote && !noQuoteReason.trim()) return fail('Say why no quotation is available');
+        if (!noQuote && !hasQuote) return fail('Attach a quotation, or tick "No quotation is available" and say why');
         return true;
+    };
+
+    // Uploads the quotations (if any), then saves the PO and runs the next step.
+    // Nothing is saved if an upload fails.
+    const savePO = (afterCreate, doneMessage) => {
+        const po = buildPO();
+        const finish = (docs) => {
+            po.documents = docs.map(d => { d.uploadedBy = state.currentUserId; return d; });
+            dispatch({ type: 'CREATE_PO', payload: { po, indentId: indent.id } });
+            if (afterCreate) afterCreate(po);
+            dispatch({ type: 'SHOW_TOAST', payload: { message: doneMessage, type: 'success' } });
+            window.location.hash = '#procurement-pos';
+        };
+        if (quotes.length === 0) { finish([]); return; }
+        setUploading(true);
+        uploadPickedFiles(indent.id, quotes, null, po.id).then(docs => {
+            setUploading(false);
+            finish(docs);
+        }).catch(err => {
+            setUploading(false);
+            fail((err.message || 'Could not upload the quotations') + '. The PO was not saved.');
+        });
     };
 
     const handleSaveDraft = () => {
         if (!vendorId) { fail('Please select a vendor'); return; }
         if (!indent.lineItems || indent.lineItems.length === 0) { fail('Cannot create PO — indent has no line items'); return; }
-        const po = buildPO();
-        dispatch({ type: 'CREATE_PO', payload: { po, indentId: indent.id } });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO draft saved', type: 'success' } });
-        window.location.hash = '#procurement-pos';
+        savePO(null, 'PO draft saved');
     };
 
     const handleRequestApproval = () => {
         if (!checkComplete()) return;
-        const po = buildPO();
-        dispatch({ type: 'CREATE_PO', payload: { po, indentId: indent.id } });
-        dispatch({ type: 'REQUEST_MD_PO_APPROVAL', payload: { poId: po.id, indentId: indent.id } });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO sent for MD approval', type: 'success' } });
-        window.location.hash = '#procurement-pos';
+        savePO(po => dispatch({ type: 'REQUEST_MD_PO_APPROVAL', payload: { poId: po.id, indentId: indent.id } }), 'PO sent for MD approval');
     };
 
     // Within the limit: the procurement manager may issue without MD approval
     const handleIssueDirect = () => {
         if (!checkComplete()) return;
         if (!window.confirm('Issue this PO to the vendor now, without MD approval?\n\nValue: ' + formatRs(grandTotal) + ' (limit ' + formatRs(mdLimit) + ')')) return;
-        const po = buildPO();
-        dispatch({ type: 'CREATE_PO', payload: { po, indentId: indent.id } });
-        dispatch({ type: 'ISSUE_PO', payload: { poId: po.id } });
-        dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO issued to vendor', type: 'success' } });
-        window.location.hash = '#procurement-pos';
+        savePO(po => dispatch({ type: 'ISSUE_PO', payload: { poId: po.id } }), 'PO issued to vendor');
     };
 
     const vendorField = (label, field, required) => {
@@ -1098,9 +1117,34 @@ function CreatePOScreen({ indentId }) {
                 React.createElement('textarea', {
                     className: 'form-textarea', value: remarks,
                     onChange: (e) => setRemarks(e.target.value),
-                    placeholder: 'Basis of the rate, quotations compared, delivery instructions...',
-                    style: { minHeight: '60px' }
+                    placeholder: 'Basis of the rate, quotations compared, how the negotiation went, delivery instructions...',
+                    style: { minHeight: '80px' }
                 })
+            ),
+
+            // Quotations
+            React.createElement(AttachmentPicker, {
+                files: quotes, setFiles: setQuotes, hideItems: true,
+                title: 'Quotations',
+                help: 'Attach the quotation(s) received — the chosen vendor\'s and any you compared against (PDF, image, Excel, Word; up to 15 MB each). The MD sees these when approving.',
+                categories: ['Quotation', 'Comparative Statement', 'Proforma Invoice', 'Estimate', 'Other'],
+                defaultCategory: 'Quotation',
+            }),
+
+            // Declaration when there is no quotation
+            React.createElement('div', { style: { margin: '-12px 0 24px 0', padding: '12px 16px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8 } },
+                React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' } },
+                    React.createElement('input', { type: 'checkbox', checked: noQuote, onChange: (e) => setNoQuote(e.target.checked) }),
+                    'No quotation is available for this order'
+                ),
+                noQuote ? React.createElement('textarea', {
+                    className: 'form-textarea', value: noQuoteReason,
+                    onChange: (e) => setNoQuoteReason(e.target.value),
+                    'aria-label': 'Why no quotation is available',
+                    placeholder: 'Declaration: why there is no quotation (e.g. rate contract, verbal / phone rate, single source, emergency purchase)...',
+                    style: { minHeight: '60px', marginTop: 8 }
+                }) : React.createElement('div', { style: { fontSize: 12, color: '#64748b', marginTop: 4 } },
+                    'A PO needs a quotation (PDF or image) or this declaration before it can be sent to the MD or issued.')
             ),
 
             // Approval route for this value
@@ -1118,9 +1162,10 @@ function CreatePOScreen({ indentId }) {
 
             // Action buttons
             React.createElement('div', { className: 'action-buttons' },
-                React.createElement('button', { className: 'btn btn-secondary', onClick: handleSaveDraft }, 'Save as Draft PO'),
-                (!needsMD && isManager && grandTotal > 0) && React.createElement('button', { className: 'btn btn-success', onClick: handleIssueDirect }, 'Issue to Vendor'),
-                React.createElement('button', { className: 'btn btn-primary', onClick: handleRequestApproval }, needsMD ? 'Send for MD Approval' : 'Send for MD Approval anyway'),
+                uploading && React.createElement('span', { style: { fontSize: 13, color: '#64748b', alignSelf: 'center' } }, 'Uploading quotations...'),
+                React.createElement('button', { className: 'btn btn-secondary', onClick: handleSaveDraft, disabled: uploading }, 'Save as Draft PO'),
+                (!needsMD && isManager && grandTotal > 0) && React.createElement('button', { className: 'btn btn-success', onClick: handleIssueDirect, disabled: uploading }, 'Issue to Vendor'),
+                React.createElement('button', { className: 'btn btn-primary', onClick: handleRequestApproval, disabled: uploading }, needsMD ? 'Send for MD Approval' : 'Send for MD Approval anyway'),
                 React.createElement('button', { className: 'btn btn-secondary', onClick: () => { window.location.hash = '#procurement-progress'; } }, 'Cancel')
             )
         )
@@ -1148,7 +1193,7 @@ function ProcurementPOsScreen() {
 
     // Send a draft to the MD, or issue it; the screen says what is missing first
     const sendOrIssue = (po, direct) => {
-        var missing = poMissingFields(po);
+        var missing = poMissingFields(po, state);
         if (missing.length > 0) {
             dispatch({ type: 'SHOW_TOAST', payload: { message: getPODisplayId(po) + ' is missing: ' + missing.slice(0, 3).join(', ') + '. Open the PO and edit it.', type: 'error' } });
             return;

@@ -158,7 +158,22 @@ function MDPOApprovalsScreen() {
                                 po.deliveryDate ? ' | Delivery: ' + new Date(po.deliveryDate).toLocaleDateString('en-IN') : '',
                                 ' | Raised by: ' + getUserName(po.createdBy, state.users)
                             ),
-                            po.notes ? React.createElement('div', { style: { fontSize: '13px', color: '#334155', marginTop: '4px' } }, 'Procurement remarks: ' + po.notes) : null
+                            po.notes ? React.createElement('div', { style: { fontSize: '13px', color: '#334155', marginTop: '4px' } }, 'Procurement remarks: ' + po.notes) : null,
+                            (function() {
+                                var poIndent = (state.indents || []).find(function(i) { return i.id === po.indentId; });
+                                var quotes = poIndent ? (poIndent.documents || []).filter(function(d) { return d.poId === po.id; }) : [];
+                                return React.createElement('div', { style: { fontSize: '13px', marginTop: '4px', color: quotes.length ? '#334155' : '#b45309' } },
+                                    quotes.length === 0
+                                        ? (po.noQuoteReason ? 'No quotation — procurement declares: ' + po.noQuoteReason : 'No quotation attached')
+                                        : 'Quotations: ',
+                                    quotes.map(function(d) {
+                                        return React.createElement('button', {
+                                            key: d.id, className: 'btn btn-sm btn-secondary', style: { marginRight: 6, marginTop: 2 },
+                                            onClick: function() { openIndentDocument(d, dispatch); }
+                                        }, '📎 ' + d.name);
+                                    })
+                                );
+                            })()
                         ),
                         React.createElement('div', { style: { fontSize: '20px', fontWeight: '700', color: '#15803d' } },
                             'Rs. ' + (po.totalAmount || 0).toLocaleString()

@@ -139,6 +139,7 @@ function transformIndent(row) {
                 size: d.size || 0,
                 mimeType: d.mime_type || '',
                 lineItemId: d.line_item_id || null,
+                poId: d.po_id || null,
             };
         }),
     };
@@ -201,6 +202,7 @@ function transformPO(row) {
         mdRemarks: row.md_remarks || '',
         closeRemarks: row.close_remarks || '',
         approvalRoute: row.approval_route || '',
+        noQuoteReason: row.no_quote_reason || '',
         vendorName: row.vendor_name || '',
         totalAmount: Number(row.total_amount) || 0,
         lineItems: (row.po_line_items || []).slice().sort(function(a, b) {

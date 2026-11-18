@@ -185,11 +185,11 @@ function unitOptionElements(current) {
 // ── Attachments (drawings, shop drawings, sketches) ──────────────────────────
 var ATTACHMENT_ACCEPT = '.pdf,.jpg,.jpeg,.png,.webp,.dwg,.dxf,.xls,.xlsx,.doc,.docx';
 var ATTACHMENT_MAX_BYTES = 15 * 1024 * 1024;
-var ATTACHMENT_CATEGORIES = ['Drawing', 'Shop Drawing', 'Sketch', 'Specification', 'Photo', 'Quotation',
+var ATTACHMENT_CATEGORIES = ['Drawing', 'Shop Drawing', 'Sketch', 'Specification', 'Photo', 'Quotation', 'Comparative Statement',
                              'Purchase Order', 'Proforma Invoice', 'Estimate', 'Delivery Challan', 'Other'];
 
 // Uploads one file to the private "indent-docs" bucket and returns the document record.
-async function uploadIndentFile(indentId, file, category, lineItemId) {
+async function uploadIndentFile(indentId, file, category, lineItemId, poId) {
   if (file.size > ATTACHMENT_MAX_BYTES) throw new Error(file.name + ' is larger than 15 MB');
   var docId = genUUID();
   var safeName = file.name.replace(/[^A-Za-z0-9._-]+/g, '_').slice(-80);
@@ -198,7 +198,7 @@ async function uploadIndentFile(indentId, file, category, lineItemId) {
   if (res.error) throw new Error('Could not upload ' + file.name + ': ' + res.error.message);
   return {
     id: docId, name: file.name, category: category || 'Drawing', storagePath: path,
-    size: file.size, mimeType: file.type || '', lineItemId: lineItemId || null,
+    size: file.size, mimeType: file.type || '', lineItemId: lineItemId || null, poId: poId || null,
     uploadedAt: new Date().toISOString(),
   };
 }
@@ -226,6 +226,9 @@ function AttachmentPicker(props) {
   var files = props.files || [];
   var setFiles = props.setFiles;
   var items = props.items || [];
+  var categories = props.categories || ATTACHMENT_CATEGORIES.slice(0, 5).concat(['Other']);
+  var defaultCategory = props.defaultCategory || categories[0];
+  var hideItems = !!props.hideItems;
   var _st = useContext(AppContext);
   var dispatch = _st[1];
   var inputRef = useRef(null);
@@ -237,7 +240,7 @@ function AttachmentPicker(props) {
       if (f.size > ATTACHMENT_MAX_BYTES) {
         dispatch({ type: 'SHOW_TOAST', payload: { message: f.name + ' is larger than 15 MB and was not added', type: 'error' } });
       } else {
-        ok.push({ file: f, category: 'Drawing', itemIndex: '' });
+        ok.push({ file: f, category: defaultCategory, itemIndex: '' });
       }
     });
     if (ok.length) setFiles(files.concat(ok));
@@ -253,9 +256,9 @@ function AttachmentPicker(props) {
   return React.createElement('div', {
     style: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 24, marginBottom: 24 }
   },
-    React.createElement('h3', { style: { fontSize: 16, fontWeight: 700, color: '#1e293b', marginBottom: 4 } }, 'Attachments'),
+    React.createElement('h3', { style: { fontSize: 16, fontWeight: 700, color: '#1e293b', marginBottom: 4 } }, props.title || 'Attachments'),
     React.createElement('p', { style: { fontSize: 12, color: '#64748b', marginBottom: 12 } },
-      'Optional. Drawings, shop drawings, hand sketches, photos or specifications (PDF, image, DWG, Excel, Word; up to 15 MB each).'),
+      props.help || 'Optional. Drawings, shop drawings, hand sketches, photos or specifications (PDF, image, DWG, Excel, Word; up to 15 MB each).'),
     React.createElement('input', {
       ref: inputRef, type: 'file', multiple: true, accept: ATTACHMENT_ACCEPT, onChange: onPick,
       'aria-label': 'Add attachments', style: { fontSize: 13, marginBottom: files.length ? 12 : 0 }
@@ -268,8 +271,8 @@ function AttachmentPicker(props) {
         React.createElement('span', { style: { flex: '1 1 200px', fontSize: 13, fontWeight: 600, color: '#1e293b', wordBreak: 'break-all' } },
           '📎 ' + f.file.name + '  (' + (f.file.size / 1048576).toFixed(1) + ' MB)'),
         React.createElement('select', { value: f.category, onChange: function(e) { update(idx, 'category', e.target.value); }, style: sel, 'aria-label': 'Type of file' },
-          ATTACHMENT_CATEGORIES.slice(0, 5).concat(['Other']).map(function(c) { return React.createElement('option', { key: c, value: c }, c); })),
-        React.createElement('select', { value: f.itemIndex, onChange: function(e) { update(idx, 'itemIndex', e.target.value); }, style: sel, 'aria-label': 'Applies to' },
+          categories.map(function(c) { return React.createElement('option', { key: c, value: c }, c); })),
+        hideItems ? null : React.createElement('select', { value: f.itemIndex, onChange: function(e) { update(idx, 'itemIndex', e.target.value); }, style: sel, 'aria-label': 'Applies to' },
           React.createElement('option', { value: '' }, 'Whole indent'),
           items.map(function(it, i) {
             var label = it.name || it.description || '';
@@ -285,12 +288,12 @@ function AttachmentPicker(props) {
 }
 
 // Uploads everything chosen in an AttachmentPicker. lineItemIds[i] is the id of form item i.
-async function uploadPickedFiles(indentId, picked, lineItemIds) {
+async function uploadPickedFiles(indentId, picked, lineItemIds, poId) {
   var docs = [];
   for (var i = 0; i < (picked || []).length; i++) {
     var p = picked[i];
     var itemId = (p.itemIndex !== '' && lineItemIds) ? (lineItemIds[Number(p.itemIndex)] || null) : null;
-    docs.push(await uploadIndentFile(indentId, p.file, p.category, itemId));
+    docs.push(await uploadIndentFile(indentId, p.file, p.category, itemId, poId));
   }
   return docs;
 }
@@ -320,12 +323,25 @@ function poNeedsMD(po, state, totalOverride) {
 function formatRs(n) { return 'Rs. ' + Math.round(Number(n) || 0).toLocaleString('en-IN'); }
 
 // What is still missing before a PO can be submitted or issued (same checks as the database).
-function poMissingFields(po) {
+var QUOTE_CATEGORIES = ['Quotation', 'Comparative Statement', 'Proforma Invoice', 'Estimate'];
+
+// Quotation files attached to a PO
+function poQuoteDocs(po, state) {
+  var indent = ((state && state.indents) || []).find(function(i) { return i.id === po.indentId; });
+  return indent ? (indent.documents || []).filter(function(d) { return d.poId === po.id; }) : [];
+}
+
+// Pass state so the quotation rule can be checked too.
+function poMissingFields(po, state) {
   var missing = [];
   if (!po.vendorId) missing.push('vendor');
   if (!po.deliveryDate) missing.push('delivery date');
   if (!String(po.notes || '').trim()) missing.push('remarks');
   var items = po.lineItems || [];
+  if (state && !String(po.noQuoteReason || '').trim()
+      && !poQuoteDocs(po, state).some(function(d) { return QUOTE_CATEGORIES.indexOf(d.category) !== -1; })) {
+    missing.push('a quotation (or a declaration that none is available)');
+  }
   if (items.length === 0) missing.push('at least one item');
   items.forEach(function(li) {
     var name = li.description || li.name || 'item';

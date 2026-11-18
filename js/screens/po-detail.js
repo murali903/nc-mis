@@ -260,6 +260,87 @@ function GRNRecordingSection(_ref) {
   );
 }
 
+// Quotations and other files attached to a purchase order. They are stored with
+// the PO's indent (so they also show on the indent page) and marked with the PO.
+function PODocumentsSection(_ref) {
+  var po = _ref.po;
+  var canUpload = _ref.canUpload;
+  var _ctx = useContext(AppContext);
+  var state = _ctx[0];
+  var dispatch = _ctx[1];
+  var fileRef = useRef(null);
+  var _cat = useState('Quotation');
+  var category = _cat[0], setCategory = _cat[1];
+  var _busy = useState(false);
+  var busy = _busy[0], setBusy = _busy[1];
+
+  var indent = (state.indents || []).find(function(i) { return i.id === po.indentId; });
+  var docs = indent ? (indent.documents || []).filter(function(d) { return d.poId === po.id; }) : [];
+  var categories = ['Quotation', 'Comparative Statement', 'Proforma Invoice', 'Estimate', 'Purchase Order', 'Delivery Challan', 'Other'];
+
+  var upload = function() {
+    var input = fileRef.current;
+    if (!input || !input.files || input.files.length === 0) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please select a file', type: 'error' } });
+      return;
+    }
+    if (!indent) return;
+    var picked = Array.prototype.slice.call(input.files).map(function(f) { return { file: f, category: category, itemIndex: '' }; });
+    setBusy(true);
+    uploadPickedFiles(indent.id, picked, null, po.id).then(function(uploaded) {
+      uploaded.forEach(function(doc) {
+        doc.uploadedBy = state.currentUserId;
+        dispatch({ type: 'ADD_DOCUMENT', payload: { indentId: indent.id, document: doc } });
+      });
+      dispatch({ type: 'SHOW_TOAST', payload: { message: uploaded.length === 1 ? 'File attached' : uploaded.length + ' files attached', type: 'success' } });
+      if (fileRef.current) fileRef.current.value = '';
+    }).catch(function(err) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: err.message || 'Could not upload the file', type: 'error' } });
+    }).then(function() { setBusy(false); });
+  };
+
+  var remove = function(doc) {
+    if (!confirm('Remove "' + doc.name + '" from this PO?')) return;
+    dispatch({ type: 'DELETE_DOCUMENT', payload: { indentId: indent.id, documentId: doc.id, documentName: doc.name } });
+    dispatch({ type: 'SHOW_TOAST', payload: { message: 'File removed', type: 'success' } });
+  };
+
+  var cell = { padding: '8px 12px', borderBottom: '1px solid #f1f5f9', fontSize: '13px' };
+
+  return React.createElement('div', { style: { background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '20px' } },
+    React.createElement('h3', { style: { marginTop: 0, marginBottom: '12px' } }, 'Quotations & Documents (' + docs.length + ')'),
+    po.noQuoteReason ? React.createElement('div', {
+      style: { background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 12px', fontSize: '13px', marginBottom: '12px' }
+    }, React.createElement('strong', null, 'Declared — no quotation available: '), po.noQuoteReason) : null,
+    docs.length === 0
+      ? React.createElement('p', { style: { color: '#6b7280', fontSize: '14px', fontStyle: 'italic', marginTop: 0 } }, 'No quotation attached to this PO.')
+      : React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', marginBottom: '12px' } },
+          React.createElement('tbody', null,
+            docs.map(function(doc) {
+              return React.createElement('tr', { key: doc.id },
+                React.createElement('td', { style: Object.assign({}, cell, { fontWeight: 600 }) }, '📎 ' + doc.name),
+                React.createElement('td', { style: cell }, doc.category),
+                React.createElement('td', { style: Object.assign({}, cell, { color: '#6b7280' }) },
+                  getUserName(doc.uploadedBy, state.users) + (doc.uploadedAt ? ', ' + new Date(doc.uploadedAt).toLocaleDateString('en-IN') : '')),
+                React.createElement('td', { style: Object.assign({}, cell, { textAlign: 'right', whiteSpace: 'nowrap' }) },
+                  React.createElement('button', { className: 'btn btn-sm btn-primary', style: { marginRight: 6 }, onClick: function() { openIndentDocument(doc, dispatch); } }, 'View / Download'),
+                  (canUpload && doc.uploadedBy === state.currentUserId) ? React.createElement('button', { className: 'btn btn-sm btn-danger', onClick: function() { remove(doc); } }, 'Remove') : null
+                )
+              );
+            })
+          )
+        ),
+    canUpload ? React.createElement('div', { className: 'no-print', style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', paddingTop: '8px', borderTop: '1px solid #e5e7eb' } },
+      React.createElement('input', { ref: fileRef, type: 'file', multiple: true, accept: ATTACHMENT_ACCEPT, 'aria-label': 'Choose files to attach', style: { fontSize: '13px' } }),
+      React.createElement('select', {
+        value: category, onChange: function(e) { setCategory(e.target.value); }, 'aria-label': 'Type of file',
+        style: { padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }
+      }, categories.map(function(c) { return React.createElement('option', { key: c, value: c }, c); })),
+      React.createElement('button', { className: 'btn btn-primary', onClick: upload, disabled: busy }, busy ? 'Uploading...' : 'Attach')
+    ) : null
+  );
+}
+
 function PODetailScreen(_ref) {
   var poId = _ref.poId;
   var _state_dispatch = useContext(AppContext);
@@ -307,6 +388,7 @@ function PODetailScreen(_ref) {
       deliveryDate: po.deliveryDate || '',
       paymentTerms: po.paymentTerms || '',
       notes: po.notes || '',
+      noQuoteReason: po.noQuoteReason || '',
       lineItems: po.lineItems.map(function(li) { return Object.assign({}, li); })
     });
     setEditing(true);
@@ -350,7 +432,7 @@ function PODetailScreen(_ref) {
       dispatch({ type: 'SHOW_TOAST', payload: { message: 'Quantity must be above zero for "' + (badLine.description || 'item') + '"', type: 'error' } });
       return;
     }
-    dispatch({ type: 'UPDATE_PO', payload: { poId: po.id, updates: { vendorId: editForm.vendorId, deliveryDate: editForm.deliveryDate || null, paymentTerms: editForm.paymentTerms, notes: editForm.notes, lineItems: editForm.lineItems, totalAmount: newTotalAmount }, note: 'Edited PO to version ' + newVersion } });
+    dispatch({ type: 'UPDATE_PO', payload: { poId: po.id, updates: { vendorId: editForm.vendorId, deliveryDate: editForm.deliveryDate || null, paymentTerms: editForm.paymentTerms, notes: editForm.notes, noQuoteReason: (editForm.noQuoteReason || '').trim(), lineItems: editForm.lineItems, totalAmount: newTotalAmount }, note: 'Edited PO to version ' + newVersion } });
     dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO updated to version ' + newVersion, type: 'success' } });
     setEditing(false);
     setEditForm(null);
@@ -451,7 +533,7 @@ function PODetailScreen(_ref) {
   var isPOManager = _poRole === 'procurement_manager' || _poRole === 'admin';
   var mdLimit = poApprovalLimit(state);
   var needsMD = poNeedsMD(po, state);
-  var missing = poMissingFields(po);
+  var missing = poMissingFields(po, state);
   var poToast = function(message, type) { dispatch({ type: 'SHOW_TOAST', payload: { message: message, type: type || 'success' } }); };
   var openMode = function(m) { setMode(mode === m ? '' : m); setText(''); };
   var closeMode = function() { setMode(''); setText(''); };
@@ -688,6 +770,15 @@ function PODetailScreen(_ref) {
           })
         )
       ),
+      React.createElement('div', { style: { marginBottom: '16px' } },
+        React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Declaration if no quotation is available (leave empty when a quotation is attached below)'),
+        React.createElement('textarea', {
+          value: editForm.noQuoteReason,
+          onChange: function(e) { var v = e.target.value; setEditForm(function(prev) { return Object.assign({}, prev, { noQuoteReason: v }); }); },
+          rows: 2, placeholder: 'e.g. rate contract, verbal / phone rate, single source, emergency purchase',
+          style: { width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', boxSizing: 'border-box' }
+        })
+      ),
       React.createElement('h4', { style: { marginBottom: '8px' } }, 'Line Items'),
       React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '13px', marginBottom: '12px' } },
         React.createElement('thead', null,
@@ -774,6 +865,11 @@ function PODetailScreen(_ref) {
         )
       )
     ) : null,
+    // Quotations and other files
+    !editing ? React.createElement(PODocumentsSection, {
+      po: po,
+      canUpload: canManagePO && po.status !== 'closed' && po.status !== 'cancelled'
+    }) : null,
     // GRN Recording Section
     (po.status === 'issued' || po.status === 'partially_fulfilled') && state.currentUser && (state.currentUser.role === 'storekeeper' || state.currentUser.role === 'procurement_manager' || state.currentUser.role === 'admin')
       ? React.createElement(GRNRecordingSection, { po: po })

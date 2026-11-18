@@ -21,6 +21,7 @@ function documentRow(doc, indentId, userId) {
         size: doc.size || 0,
         mime_type: doc.mimeType || doc.type || '',
         line_item_id: doc.lineItemId || null,
+        po_id: doc.poId || null,
     };
 }
 
@@ -232,6 +233,7 @@ async function supabaseSync(action, state, postState) {
                     notes: po.notes || '',
                     office_id: po.officeId || null,
                     total_amount: po.totalAmount || 0,
+                    no_quote_reason: po.noQuoteReason || null,
                 };
                 sbCheck(await supabaseClient.schema('indent_flow').from('purchase_orders').insert(poRow), 'insert PO');
 
@@ -249,6 +251,13 @@ async function supabaseSync(action, state, postState) {
                         };
                     });
                     sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items').insert(poLiRows), 'insert PO line items');
+                }
+
+                // Quotations chosen on the create screen (already uploaded to storage)
+                if (po.documents && po.documents.length > 0) {
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_documents').insert(
+                        po.documents.map(function(d) { return documentRow(d, action.payload.indentId, state.currentUserId); })
+                    ), 'save quotations');
                 }
 
                 // The indent is linked to the PO and moved to "PO draft" by the database
@@ -274,6 +283,7 @@ async function supabaseSync(action, state, postState) {
                 if (updates.officeId !== undefined) dbUpdates.office_id = updates.officeId || null;
                 if (updates.totalAmount !== undefined) dbUpdates.total_amount = updates.totalAmount || 0;
                 if (updates.remarks !== undefined) dbUpdates.remarks = updates.remarks;
+                if (updates.noQuoteReason !== undefined) dbUpdates.no_quote_reason = updates.noQuoteReason || null;
                 // The reducer bumps the version on every edit; persist it (state is pre-reducer)
                 var _updPo = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
                 if (_updPo) dbUpdates.version = (_updPo.version || 1) + 1;

@@ -36,7 +36,11 @@ function DocumentsSection(_ref) {
     return po.indentId === indent.id;
   });
 
-  var itemLabel = function(lineItemId) {
+  var itemLabel = function(lineItemId, poId) {
+    if (poId) {
+      var dpo = (state.purchaseOrders || []).find(function(p) { return p.id === poId; });
+      return dpo ? getPODisplayId(dpo) : 'Purchase order';
+    }
     if (!lineItemId) return 'Whole indent';
     var idx = (indent.lineItems || []).findIndex(function(li) { return li.id === lineItemId; });
     if (idx === -1) return 'Whole indent';
@@ -175,7 +179,7 @@ function DocumentsSection(_ref) {
                   style: { background: badgeColor, color: '#fff', padding: '2px 8px', borderRadius: '12px', fontSize: '12px', fontWeight: '500' }
                 }, doc.category)
               ),
-              React.createElement('td', { style: { padding: '10px 12px', color: '#374151' } }, itemLabel(doc.lineItemId)),
+              React.createElement('td', { style: { padding: '10px 12px', color: '#374151' } }, itemLabel(doc.lineItemId, doc.poId)),
               React.createElement('td', { style: { padding: '10px 12px', color: '#6b7280' } }, formatSize(doc.size)),
               React.createElement('td', { style: { padding: '10px 12px' } }, getUserName(doc.uploadedBy, state.users)),
               React.createElement('td', { style: { padding: '10px 12px', color: '#6b7280' } }, formatDate(doc.uploadedAt)),
@@ -239,6 +243,8 @@ function IndentActionButtons(_ref) {
   var text = _text[0], setText = _text[1];
   var _assignClerk = useState('');
   var assignClerkId = _assignClerk[0], setAssignClerkId = _assignClerk[1];
+  var _showDispatch = useState(false);
+  var showDispatch = _showDispatch[0], setShowDispatch = _showDispatch[1];
 
   var currentUser = state.currentUser;
   if (!currentUser) return null;
@@ -395,7 +401,9 @@ function IndentActionButtons(_ref) {
         dispatch({ type: 'ASSIGN_INDENT', payload: { indentId: indent.id, userId: state.currentUserId } });
         toast('Indent self-assigned');
       } }, 'Self-Assign'),
-      React.createElement('a', { href: '#create-po/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Create PO')
+      React.createElement('a', { href: '#create-po/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Create PO'),
+      React.createElement('button', { className: 'btn btn-secondary', onClick: function() { setShowDispatch(true); } }, 'Dispatch without PO'),
+      showDispatch ? React.createElement(DispatchModal, { indentId: indent.id, onClose: function() { setShowDispatch(false); } }) : null
     );
   }
 
@@ -403,13 +411,9 @@ function IndentActionButtons(_ref) {
   if ((role === 'procurement_manager' || role === 'procurement_clerk') && status === 'in_procurement') {
     return React.createElement('div', { style: buttonWrap },
       React.createElement('a', { href: '#create-po/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Create PO'),
-      // Dispatch needs vendor, expected delivery and document reference, which are
-      // collected on the In Progress screen.
-      React.createElement('a', {
-        href: role === 'procurement_clerk' ? '#clerk-assigned' : '#procurement-progress',
-        className: 'btn btn-success', style: { textDecoration: 'none' },
-        title: 'Opens the In Progress list, where dispatch details are entered'
-      }, 'Dispatch without PO (enter details)')
+      // Dispatch details (vendor, expected delivery, notes) are entered right here
+      React.createElement('button', { className: 'btn btn-success', onClick: function() { setShowDispatch(true); } }, 'Dispatch without PO'),
+      showDispatch ? React.createElement(DispatchModal, { indentId: indent.id, onClose: function() { setShowDispatch(false); } }) : null
     );
   }
 
