@@ -1108,7 +1108,9 @@ function CreatePOScreen({ indentId }) {
                 style: { padding: '10px 14px', borderRadius: 8, marginBottom: 16, fontSize: 13,
                          background: needsMD ? '#fef2f2' : '#f0fdf4', border: '1px solid ' + (needsMD ? '#fecaca' : '#bbf7d0'), color: '#1e293b' }
             },
-                needsMD
+                grandTotal <= 0
+                    ? 'Enter the rates to see whether this order needs MD approval (limit ' + formatRs(mdLimit) + ').'
+                    : needsMD
                     ? 'This order (' + formatRs(valueForLimit) + (valueForLimit !== grandTotal ? ' including other POs on this indent' : '') + ') is above the ' + formatRs(mdLimit) + ' limit: MD approval is required.'
                     : 'This order (' + formatRs(valueForLimit) + ') is within the ' + formatRs(mdLimit) + ' limit: '
                         + (isManager ? 'you can issue it directly, or send it to the MD if you prefer.' : 'the procurement manager can issue it directly, or you can send it to the MD.')
