@@ -1511,9 +1511,9 @@ async function savePOVersionHistory(po, userId, summary) {
     if (res.error) console.error('[NC_MIS] Could not save PO version history:', res.error);
 }
 
-// Calls one PO workflow function in the database. The message of a refused action
+// Calls one workflow function (indent_* or po_*) in the database. The message of a refused action
 // (wrong role, wrong status, over-receipt ...) comes straight from the function.
-async function callPO(fnName, args) {
+async function callFlow(fnName, args) {
     var res = await supabaseClient.schema('indent_flow').rpc(fnName, args);
     if (res.error) {
         console.error('[NC_MIS] ' + fnName + ' refused:', res.error);
@@ -1521,16 +1521,6 @@ async function callPO(fnName, args) {
     }
     return res.data;
 }
-
-// Actions whose notifications are created by the database function itself
-var DB_NOTIFIED_ACTIONS = {
-    SUBMIT_PO_FOR_APPROVAL: 1, REQUEST_MD_PO_APPROVAL: 1, MD_APPROVE_PO: 1, APPROVE_PO: 1,
-    MD_REJECT_PO: 1, REJECT_PO: 1, ISSUE_PO: 1, FINALIZE_PO: 1, AMEND_PO: 1, CLOSE_PO: 1,
-    CANCEL_PO: 1, RECEIVE_AGAINST_PO: 1,
-};
-
-// Local notification ids already written to the DB (avoids duplicates across queued syncs)
-var _syncedNotifIds = {};
 
 async function supabaseSync(action, state, postState) {
     try {
@@ -1542,10 +1532,10 @@ async function supabaseSync(action, state, postState) {
                     site_id: indent.siteId,
                     created_by: indent.createdBy,
                     created_at: indent.createdAt,
-                    status: indent.status,
+                    status: 'draft',   // submission is done by indent_flow.indent_submit below
                     priority: indent.priority || 'normal',
                     required_date: indent.requiredDate || null,
-                    submitted_at: indent.status === 'pending_approval' ? indent.createdAt : null,
+                    submitted_at: null,
                     description: indent.remarks || indent.description || '',
                     notes: indent.remarks || indent.notes || '',
                 };
@@ -1567,9 +1557,6 @@ async function supabaseSync(action, state, postState) {
                     }
                 }
                 sbCheck(indentRes, 'insert indent');
-                // Read back the number the database assigned, for notification text
-                var _numRes = await supabaseClient.schema('indent_flow').from('indents').select('indent_number').eq('id', indent.id).maybeSingle();
-                if (_numRes.data && _numRes.data.indent_number) action._indentNumber = _numRes.data.indent_number;
 
                 if (indent.lineItems && indent.lineItems.length > 0) {
                     var liRows = indent.lineItems.map(function(li) {
@@ -1587,102 +1574,57 @@ async function supabaseSync(action, state, postState) {
                     sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items').insert(liRows), 'insert line items');
                 }
 
-                if (indent.activityLog && indent.activityLog.length > 0) {
-                    var actRows = indent.activityLog.map(function(a) {
-                        return {
-                            indent_id: indent.id,
-                            action: a.action,
-                            user_id: a.by,
-                            created_at: a.at,
-                            note: a.note || '',
-                        };
-                    });
-                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert(actRows), 'insert activity');
+                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                    indent_id: indent.id,
+                    action: 'Created',
+                    user_id: indent.createdBy,
+                    note: '',
+                }), 'insert activity');
+
+                if (indent.status === 'pending_approval') {
+                    await callFlow('indent_submit', { p_indent_id: indent.id });
                 }
                 console.log('[NC_MIS] Indent ' + indent.id + ' synced to Supabase successfully');
                 break;
             }
 
+            // ── Indent lifecycle: every status change is one database function
+            // (indent_flow.indent_*), which checks role and status and writes the
+            // indent, its timeline, notifications and the event log together.
             case 'SUBMIT_INDENT': {
-                await safeIndentUpdate(action.payload.indentId, { status: 'pending_approval', submitted_at: new Date().toISOString() }, 'submit indent');
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: action.payload.indentId,
-                    action: 'Submitted for Approval',
-                    user_id: action.payload.userId || state.currentUserId,
-                    note: '',
-                }), 'submit activity');
+                await callFlow('indent_submit', { p_indent_id: action.payload.indentId });
                 break;
             }
 
             case 'APPROVE_INDENT': {
-                await safeIndentUpdate(action.payload.indentId, { status: 'approved', approved_by: action.payload.approvedBy || state.currentUserId }, 'approve indent');
-
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: action.payload.indentId,
-                    action: 'Approved',
-                    user_id: action.payload.approvedBy || state.currentUserId,
-                    note: action.payload.note || '',
-                }), 'approve activity');
+                await callFlow('indent_approve', { p_indent_id: action.payload.indentId, p_note: action.payload.note || '' });
                 break;
             }
 
             case 'REJECT_INDENT': {
-                var isReturn = action.payload.returnForRevision;
-                var newStatus = isReturn ? 'returned_for_revision' : 'rejected';
-                var actionLabel = isReturn ? 'Returned for Revision' : 'Rejected';
-
-                await safeIndentUpdate(action.payload.indentId,
-                    { status: newStatus, rejection_reason: action.payload.reason || '' },
-                    'reject indent');
-
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: action.payload.indentId,
-                    action: actionLabel,
-                    user_id: action.payload.rejectedBy || state.currentUserId,
-                    note: action.payload.reason || '',
-                }), 'reject activity');
+                await callFlow('indent_reject', {
+                    p_indent_id: action.payload.indentId,
+                    p_reason: action.payload.reason || '',
+                    p_return: !!action.payload.returnForRevision,
+                });
                 break;
             }
 
             case 'ESCALATE_TO_MD': {
-                await safeIndentUpdate(action.payload.indentId,
-                    { status: 'escalated_to_md', escalation_remarks: action.payload.remarks || '' },
-                    'escalate indent');
-
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: action.payload.indentId,
-                    action: 'Escalated to MD',
-                    user_id: state.currentUserId,
-                    note: action.payload.remarks || '',
-                }), 'escalate activity');
+                await callFlow('indent_escalate', { p_indent_id: action.payload.indentId, p_remarks: action.payload.remarks || '' });
                 break;
             }
 
             case 'ASSIGN_INDENT': {
-                await safeIndentUpdate(action.payload.indentId,
-                    { status: 'in_procurement', assigned_to: action.payload.userId },
-                    'assign indent');
-
-                var assigneeName = '';
-                var assigneeUser = (state.users || []).find(function(u) { return u.id === action.payload.userId; });
-                if (assigneeUser) assigneeName = assigneeUser.name;
-
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: action.payload.indentId,
-                    action: 'Assigned to Procurement',
-                    user_id: action.payload.assignedBy || state.currentUserId,
-                    note: 'Assigned to ' + assigneeName,
-                }), 'assign activity');
+                await callFlow('indent_assign', { p_indent_id: action.payload.indentId, p_user_id: action.payload.userId });
                 break;
             }
 
             case 'REVISE_RESUBMIT': {
                 await safeIndentUpdate(action.payload.indentId, {
-                    status: 'pending_approval',
                     is_revised: true,
                     revision_count: (action.payload.revisionCount || 0) + 1,
                     notes: action.payload.notes || '',
-                    submitted_at: new Date().toISOString(),
                 }, 'revise indent');
 
                 // Delete old line items and insert new ones
@@ -1705,12 +1647,6 @@ async function supabaseSync(action, state, postState) {
                     sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items').insert(revLiRows), 'insert revised line items');
                 }
 
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: action.payload.indentId,
-                    action: 'Revised & Resubmitted',
-                    user_id: action.payload.revisedBy,
-                    note: action.payload.remarks || '',
-                }), 'revise activity');
 
                 if (action.payload.remarks) {
                     sbCheck(await supabaseClient.schema('indent_flow').from('indent_comments').insert({
@@ -1719,6 +1655,9 @@ async function supabaseSync(action, state, postState) {
                         content: action.payload.remarks,
                     }), 'revise comment');
                 }
+
+                // Status change, timeline entry and notifications
+                await callFlow('indent_submit', { p_indent_id: action.payload.indentId });
                 break;
             }
 
@@ -1858,45 +1797,45 @@ async function supabaseSync(action, state, postState) {
             // the timeline, notifications and the event log in a single transaction.
             case 'SUBMIT_PO_FOR_APPROVAL':
             case 'REQUEST_MD_PO_APPROVAL': {
-                await callPO('po_submit', { p_po_id: action.payload.poId });
+                await callFlow('po_submit', { p_po_id: action.payload.poId });
                 break;
             }
 
             case 'MD_APPROVE_PO':
             case 'APPROVE_PO': {
-                await callPO('po_approve', { p_po_id: action.payload.poId });
+                await callFlow('po_approve', { p_po_id: action.payload.poId });
                 break;
             }
 
             case 'MD_REJECT_PO':
             case 'REJECT_PO': {
-                await callPO('po_reject', { p_po_id: action.payload.poId, p_reason: action.payload.reason || '' });
+                await callFlow('po_reject', { p_po_id: action.payload.poId, p_reason: action.payload.reason || '' });
                 break;
             }
 
             case 'ISSUE_PO':
             case 'FINALIZE_PO': {
-                await callPO('po_issue', { p_po_id: action.payload.poId });
+                await callFlow('po_issue', { p_po_id: action.payload.poId });
                 break;
             }
 
             case 'AMEND_PO': {
-                await callPO('po_amend', { p_po_id: action.payload.poId });
+                await callFlow('po_amend', { p_po_id: action.payload.poId });
                 break;
             }
 
             case 'CLOSE_PO': {
-                await callPO('po_close', { p_po_id: action.payload.poId });
+                await callFlow('po_close', { p_po_id: action.payload.poId });
                 break;
             }
 
             case 'CANCEL_PO': {
-                await callPO('po_cancel', { p_po_id: action.payload.poId, p_reason: action.payload.reason || '' });
+                await callFlow('po_cancel', { p_po_id: action.payload.poId, p_reason: action.payload.reason || '' });
                 break;
             }
 
             case 'RECEIVE_AGAINST_PO': {
-                await callPO('po_receive', {
+                await callFlow('po_receive', {
                     p_po_id: action.payload.poId,
                     p_receipts: (action.payload.receipts || []).map(function(r) {
                         return {
@@ -1916,65 +1855,37 @@ async function supabaseSync(action, state, postState) {
             }
 
             case 'MARK_DISPATCHED': {
-                var indentId = typeof action.payload === 'string' ? action.payload : action.payload.indentId;
-                var dispNote = '';
-                if (typeof action.payload === 'object') {
-                    dispNote = 'Vendor: ' + (action.payload.vendorName || '') + ' | ETA: ' + (action.payload.expectedDelivery || '') + ' | Ref: ' + (action.payload.docReference || '') + ' | Notes: ' + (action.payload.notes || '');
-                }
-                await safeIndentUpdate(indentId, { status: 'dispatched' }, 'mark dispatched');
-
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: indentId,
-                    action: 'Dispatched',
-                    user_id: state.currentUserId,
-                    note: dispNote,
-                }), 'dispatch activity');
+                var _md = (typeof action.payload === 'string') ? { indentId: action.payload } : (action.payload || {});
+                await callFlow('indent_dispatch', {
+                    p_indent_id: _md.indentId,
+                    p_vendor: _md.vendorName || _md.dispatchVendor || '',
+                    p_expected_delivery: _md.expectedDelivery || _md.dispatchETA || '',
+                    p_doc_reference: _md.docReference || '',
+                    p_notes: _md.notes || _md.dispatchNotes || '',
+                });
                 break;
             }
 
             case 'RECEIVE_ITEMS': {
-                var recIndentId = action.payload.indentId;
-                var lineItemUpdates = action.payload.lineItemUpdates || {};
-                var updateKeys = Object.keys(lineItemUpdates);
-                for (var rk = 0; rk < updateKeys.length; rk++) {
-                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items')
-                        .update({ received: lineItemUpdates[updateKeys[rk]] })
-                        .eq('id', updateKeys[rk]), 'update line item received');
-                }
-
-                // Check if all received - the reducer handles status update
-                var indentForReceive = (state.indents || []).find(function(i) { return i.id === recIndentId; });
-                if (indentForReceive) {
-                    var updatedLIs = indentForReceive.lineItems.map(function(li) {
-                        return lineItemUpdates[li.id] !== undefined ? Object.assign({}, li, { received: lineItemUpdates[li.id] }) : li;
-                    });
-                    var allDone = updatedLIs.every(function(li) { return li.received >= li.qty; });
-                    if (allDone) {
-                        await safeIndentUpdate(recIndentId, { status: 'completed' }, 'mark indent completed');
-                    }
-                }
-
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: recIndentId,
-                    action: 'Items Received',
-                    user_id: action.payload.receivedBy || state.currentUserId,
-                    note: action.payload.receiptNote || '',
-                }), 'receive activity');
+                await callFlow('indent_receive', {
+                    p_indent_id: action.payload.indentId,
+                    p_items: (action.payload.receipts || []).map(function(r) {
+                        return {
+                            line_item_id: r.lineItemId,
+                            quantity: parseFloat(r.quantity) || 0,
+                            condition: r.condition || 'Good',
+                            quality_remarks: r.qualityRemarks || '',
+                        };
+                    }),
+                    p_photo_url: action.payload.photoUrl || '',
+                });
+                action._reload = true;
                 break;
             }
 
             case 'SUBMIT_DRAFT': {
                 var draftId = typeof action.payload === 'string' ? action.payload : action.payload.indentId;
-                await safeIndentUpdate(draftId,
-                    { status: 'pending_approval', submitted_at: new Date().toISOString() },
-                    'submit draft');
-
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: draftId,
-                    action: 'Submitted for Approval',
-                    user_id: state.currentUserId,
-                    note: '',
-                }), 'submit draft activity');
+                await callFlow('indent_submit', { p_indent_id: draftId });
                 break;
             }
 
@@ -2046,17 +1957,10 @@ async function supabaseSync(action, state, postState) {
 
             case 'BULK_APPROVE': {
                 var ids = action.payload.indentIds || [];
-                var bulkApprovedBy = action.payload.approvedBy || state.currentUserId;
                 for (var bi = 0; bi < ids.length; bi++) {
-                    await safeIndentUpdate(ids[bi], { status: 'approved', approved_by: bulkApprovedBy }, 'bulk approve');
-
-                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                        indent_id: ids[bi],
-                        action: 'Approved (Bulk)',
-                        user_id: bulkApprovedBy,
-                        note: 'Bulk approved with ' + ids.length + ' other indents',
-                    }), 'bulk approve activity');
+                    await callFlow('indent_approve', { p_indent_id: ids[bi], p_note: 'Bulk approved with ' + (ids.length - 1) + ' other indent(s)' });
                 }
+                action._reload = true;
                 break;
             }
 
@@ -2226,33 +2130,13 @@ async function supabaseSync(action, state, postState) {
                 break;
             }
 
-            case 'ESCALATE_TO_MD':
             case 'MD_ESCALATION_APPROVE':
             case 'MD_ESCALATION_DISMISS': {
-                // Already handled ESCALATE_TO_MD above, handle the MD responses
-                if (action.type === 'MD_ESCALATION_APPROVE') {
-                    await safeIndentUpdate(action.payload.indentId,
-                        { status: 'in_procurement', md_escalation_result: 'approved', md_remarks: action.payload.remarks || '' },
-                        'md escalation approve');
-
-                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                        indent_id: action.payload.indentId,
-                        action: 'MD Escalation Approved',
-                        user_id: state.currentUserId,
-                        note: action.payload.remarks || '',
-                    }), 'save ' + action.type);
-                } else if (action.type === 'MD_ESCALATION_DISMISS') {
-                    await safeIndentUpdate(action.payload.indentId,
-                        { status: 'returned_for_revision', md_escalation_result: 'dismissed', md_remarks: action.payload.remarks || '' },
-                        'md escalation dismiss');
-
-                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                        indent_id: action.payload.indentId,
-                        action: 'MD Escalation Dismissed',
-                        user_id: state.currentUserId,
-                        note: action.payload.remarks || '',
-                    }), 'save ' + action.type);
-                }
+                await callFlow('indent_escalation_decide', {
+                    p_indent_id: action.payload.indentId,
+                    p_approve: action.type === 'MD_ESCALATION_APPROVE',
+                    p_remarks: action.payload.remarks || '',
+                });
                 break;
             }
 
@@ -2266,16 +2150,7 @@ async function supabaseSync(action, state, postState) {
             }
 
             case 'RETURN_FOR_REVISION': {
-                await safeIndentUpdate(action.payload.indentId,
-                    { status: 'returned_for_revision', return_reason: action.payload.reason || '' },
-                    'return for revision');
-
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: action.payload.indentId,
-                    action: 'Returned for Revision',
-                    user_id: state.currentUserId,
-                    note: action.payload.reason || '',
-                }), 'save ' + action.type);
+                await callFlow('indent_reject', { p_indent_id: action.payload.indentId, p_reason: action.payload.reason || '', p_return: true });
                 break;
             }
 
@@ -2365,34 +2240,8 @@ async function supabaseSync(action, state, postState) {
                 break;
         }
 
-        // Persist notifications the reducer created for this action (ids starting 'notif-'
-        // are local-only; rows loaded from the DB have UUID ids). The receipt flow inserts
-        // its own, richer notification above. Failures are logged, not fatal.
-        if (postState) {
-            var _preNotifIds = {};
-            ((state || {}).notifications || []).forEach(function(n) { _preNotifIds[n.id] = true; });
-            var _newNotifs = (postState.notifications || []).filter(function(n) {
-                return n && typeof n.id === 'string' && n.id.indexOf('notif-') === 0 && !_preNotifIds[n.id] && !_syncedNotifIds[n.id] && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(String(n.userId || ''));
-            });
-            // Mark as handled first, so a later queued sync (e.g. the toast that follows)
-            // does not save the same notification again.
-            _newNotifs.forEach(function(n) { _syncedNotifIds[n.id] = true; });
-            if (DB_NOTIFIED_ACTIONS[action.type]) _newNotifs = [];
-            if (_newNotifs.length > 0) {
-                var notifRows = _newNotifs.map(function(n) {
-                    return {
-                        id: genUUID(),
-                        user_id: n.userId,
-                        title: n.title || 'IndentFlow update',
-                        message: action._indentNumber ? String(n.message || '').split(NEW_INDENT_LABEL).join(action._indentNumber) : (n.message || ''),
-                        link: n.link || (n.indentId ? '#indent/' + n.indentId : null),
-                        is_read: false,
-                    };
-                });
-                var _notifRes = await supabaseClient.schema('indent_flow').from('notifications').insert(notifRows);
-                if (_notifRes.error) console.error('[NC_MIS] Could not save notifications for ' + action.type + ':', _notifRes.error);
-            }
-        }
+        // Notifications are created by the database functions (indent_* / po_*), so
+        // nothing is written here for the in-memory ones the reducer produces.
 
     } catch (err) {
         console.error('[NC_MIS] Sync error for ' + action.type + ':', err);
@@ -11125,6 +10974,7 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
         }
 
         // Summarise what was received, in what condition, so it is kept with the indent
+        var receipts = [];
         var receiptLines = [];
         var qualityIssues = [];
         indent.lineItems.forEach(function(li) {
@@ -11133,13 +10983,14 @@ function ReceiptEntryScreen({ indent, currentUserId }) {
                 var cond = conditions[li.id] || 'Good';
                 var qr = (qualityRemarks[li.id] || '').trim();
                 var itemName = li.name || li.description || 'Item';
+                receipts.push({ lineItemId: li.id, quantity: qtyNow, condition: cond, qualityRemarks: qr });
                 receiptLines.push(itemName + ': ' + qtyNow + ' ' + (li.unit || '') + ' received, ' + cond + (qr ? ' (' + qr + ')' : ''));
                 if (cond !== 'Good') qualityIssues.push(itemName + ': ' + cond + (qr ? ' (' + qr + ')' : ''));
             }
         });
         var receiptNote = receiptLines.join('; ') + (photoUrl ? ' | Photo: ' + photoUrl : '');
 
-        dispatch({ type: 'RECEIVE_ITEMS', payload: { indentId: indent.id, lineItemUpdates, photoUrl: photoUrl, receiptNote: receiptNote, qualityIssues: qualityIssues } });
+        dispatch({ type: 'RECEIVE_ITEMS', payload: { indentId: indent.id, lineItemUpdates, receipts: receipts, photoUrl: photoUrl, receiptNote: receiptNote, qualityIssues: qualityIssues } });
 
         var allFullyReceived = indent.lineItems.every(function(li) { return (lineItemUpdates[li.id] || li.received) >= li.qty; });
         var message = allFullyReceived ? 'Receipt saved - Indent completed' : 'Receipt saved successfully';
