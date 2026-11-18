@@ -63,6 +63,12 @@ async function loadAllData(userId) {
     };
 }
 
+// Line items created on screen sometimes carry a temporary id ('li-new-1');
+// the database needs a real UUID.
+function asUUID(id) {
+    return (typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) ? id : genUUID();
+}
+
 // ============ UUID GENERATOR ============
 function genUUID() {
     if (crypto.randomUUID) return crypto.randomUUID();

@@ -76,6 +76,12 @@ vendors, site assignments, settings). `indent_flow` holds this module's data.
 
 - All data is loaded at sign-in; fine for now, will need per-screen loading as
   volume grows.
-- The screen updates before the save finishes. If the save is refused, an error
-  is shown and the screen reloads from the database.
+- Every action is saved first and shown on screen only after the database
+  accepts it. Form checks in the browser are a convenience; the database
+  functions and the guard triggers (`20261118d_lock_direct_writes.sql`) are
+  what enforce the rules.
+- Drafts, comments, documents, vendors, sites and settings are still written
+  straight to their tables (protected by row-level security and the guards),
+  not through functions.
+- A deactivated user can still sign in and read data; they cannot write.
 - No automated tests yet; flows are tested by hand on the dev address.

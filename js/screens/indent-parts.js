@@ -312,7 +312,7 @@ function IndentActionButtons(_ref) {
         dispatch({ type: 'SUBMIT_INDENT', payload: { indentId: indent.id, userId: state.currentUserId } });
         dispatch({ type: 'SHOW_TOAST', payload: { message: 'Indent submitted for approval', type: 'success' } });
       } }, 'Submit for Approval'),
-      React.createElement('a', { href: '#edit-indent/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Edit Indent')
+      React.createElement('a', { href: '#edit-draft/' + indent.id, className: 'btn btn-primary', style: { textDecoration: 'none' } }, 'Edit Indent')
     );
   }
 

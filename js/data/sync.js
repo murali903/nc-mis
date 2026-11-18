@@ -38,17 +38,22 @@ async function supabaseSync(action, state, postState) {
                 if (indent.lineItems && indent.lineItems.length > 0) {
                     var liRows = indent.lineItems.map(function(li) {
                         return {
-                            id: li.id,
+                            id: asUUID(li.id),
                             indent_id: indent.id,
                             description: li.name || li.description,
                             qty: li.qty,
                             unit: li.unit,
-                            received: li.received || 0,
+                            received: 0,
                             is_boq: li.isBoqItem !== false && li.isBoq !== false,
                             non_boq_reason: li.nonBoqReason || null,
                         };
                     });
-                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items').insert(liRows), 'insert line items');
+                    var liRes = await supabaseClient.schema('indent_flow').from('indent_line_items').insert(liRows);
+                    if (liRes.error) {
+                        // Do not leave an indent with no items behind
+                        await supabaseClient.schema('indent_flow').from('indents').delete().eq('id', indent.id);
+                        sbCheck(liRes, 'insert line items');
+                    }
                 }
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
@@ -98,10 +103,11 @@ async function supabaseSync(action, state, postState) {
             }
 
             case 'REVISE_RESUBMIT': {
+                var _revInd = (state.indents || []).find(function(i) { return i.id === action.payload.indentId; });
                 await safeIndentUpdate(action.payload.indentId, {
                     is_revised: true,
-                    revision_count: (action.payload.revisionCount || 0) + 1,
-                    notes: action.payload.notes || '',
+                    revision_count: ((_revInd && _revInd.revisionCount) || 0) + 1,
+                    notes: action.payload.notes || action.payload.remarks || '',
                 }, 'revise indent');
 
                 // Delete old line items and insert new ones
@@ -111,12 +117,12 @@ async function supabaseSync(action, state, postState) {
                 if (action.payload.lineItems && action.payload.lineItems.length > 0) {
                     var revLiRows = action.payload.lineItems.map(function(li) {
                         return {
-                            id: li.id,
+                            id: asUUID(li.id),
                             indent_id: action.payload.indentId,
                             description: li.name || li.description,
                             qty: li.qty,
                             unit: li.unit,
-                            received: li.received || 0,
+                            received: 0,
                             is_boq: li.isBoqItem !== false && li.isBoq !== false,
                             non_boq_reason: li.nonBoqReason || null,
                         };
@@ -189,7 +195,7 @@ async function supabaseSync(action, state, postState) {
                     po_number: po.poNumber || ('PO-' + po.id.slice(0, 8).toUpperCase()),
                     indent_id: action.payload.indentId,
                     vendor_id: po.vendorId,
-                    status: po.status || 'draft',
+                    status: 'draft',   // submission is done by indent_flow.po_submit
                     created_by: state.currentUserId,
                     version: 1,
                     delivery_date: po.deliveryDate || null,
@@ -217,9 +223,8 @@ async function supabaseSync(action, state, postState) {
                     sbCheck(await supabaseClient.schema('indent_flow').from('po_line_items').insert(poLiRows), 'insert PO line items');
                 }
 
-                await safeIndentUpdate(action.payload.indentId,
-                    { status: 'po_draft', linked_po: po.id },
-                    'link PO to indent');
+                // The indent is linked to the PO and moved to "PO draft" by the database
+                // (trigger on purchase_orders), not from here.
 
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
                     indent_id: action.payload.indentId,
@@ -367,19 +372,22 @@ async function supabaseSync(action, state, postState) {
             }
 
             case 'UPDATE_DRAFT': {
-                await safeIndentUpdate(action.payload.indentId,
-                    { description: action.payload.description || '', notes: action.payload.notes || '' },
-                    'update draft');
+                // The edit screen sends { id, status, priority, remarks, lineItems }
+                var _udId = action.payload.indentId || action.payload.id;
+                var _udText = action.payload.remarks !== undefined ? action.payload.remarks : (action.payload.description || '');
+                var _udFields = { description: _udText || '', notes: action.payload.notes !== undefined ? action.payload.notes : (_udText || '') };
+                if (action.payload.priority) _udFields.priority = action.payload.priority;
+                await safeIndentUpdate(_udId, _udFields, 'update draft');
 
                 // Replace line items
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items')
-                    .delete().eq('indent_id', action.payload.indentId), 'delete draft line items');
+                    .delete().eq('indent_id', _udId), 'delete draft line items');
 
                 if (action.payload.lineItems && action.payload.lineItems.length > 0) {
                     var draftLiRows = action.payload.lineItems.map(function(li) {
                         return {
-                            id: li.id,
-                            indent_id: action.payload.indentId,
+                            id: asUUID(li.id),
+                            indent_id: _udId,
                             description: li.name || li.description,
                             qty: li.qty,
                             unit: li.unit,
@@ -388,6 +396,12 @@ async function supabaseSync(action, state, postState) {
                     });
                     sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items').insert(draftLiRows), 'insert draft line items');
                 }
+
+                // "Submit" on the edit screen: save the draft, then submit it
+                if (action.payload.status === 'pending_approval') {
+                    await callFlow('indent_submit', { p_indent_id: _udId });
+                }
+                action._reload = true;
                 break;
             }
 
