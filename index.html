@@ -1511,6 +1511,24 @@ async function savePOVersionHistory(po, userId, summary) {
     if (res.error) console.error('[NC_MIS] Could not save PO version history:', res.error);
 }
 
+// Calls one PO workflow function in the database. The message of a refused action
+// (wrong role, wrong status, over-receipt ...) comes straight from the function.
+async function callPO(fnName, args) {
+    var res = await supabaseClient.schema('indent_flow').rpc(fnName, args);
+    if (res.error) {
+        console.error('[NC_MIS] ' + fnName + ' refused:', res.error);
+        throw new Error(res.error.message || (fnName + ' failed'));
+    }
+    return res.data;
+}
+
+// Actions whose notifications are created by the database function itself
+var DB_NOTIFIED_ACTIONS = {
+    SUBMIT_PO_FOR_APPROVAL: 1, REQUEST_MD_PO_APPROVAL: 1, MD_APPROVE_PO: 1, APPROVE_PO: 1,
+    MD_REJECT_PO: 1, REJECT_PO: 1, ISSUE_PO: 1, FINALIZE_PO: 1, AMEND_PO: 1, CLOSE_PO: 1,
+    CANCEL_PO: 1, RECEIVE_AGAINST_PO: 1,
+};
+
 // Local notification ids already written to the DB (avoids duplicates across queued syncs)
 var _syncedNotifIds = {};
 
@@ -1835,124 +1853,65 @@ async function supabaseSync(action, state, postState) {
                 break;
             }
 
-            case 'SUBMIT_PO_FOR_APPROVAL': {
-                await updatePO(action.payload.poId, { status: 'pending_approval', updated_at: new Date().toISOString() }, 'submit PO');
-                await syncIndentStatusForPO(action.payload.poId, 'pending_md_po_approval', 'indent status after PO submit');
+            // ── PO lifecycle: every action is one database function (indent_flow.po_*).
+            // The function checks role and status and writes the PO, the linked indent,
+            // the timeline, notifications and the event log in a single transaction.
+            case 'SUBMIT_PO_FOR_APPROVAL':
+            case 'REQUEST_MD_PO_APPROVAL': {
+                await callPO('po_submit', { p_po_id: action.payload.poId });
                 break;
             }
 
-            case 'MD_APPROVE_PO': {
-                await updatePO(action.payload.poId, { status: 'approved', updated_at: new Date().toISOString() }, 'approve PO');
-                await syncIndentStatusForPO(action.payload.poId, 'po_approved', 'indent status after PO approval');
-                break;
-            }
-
-            case 'MD_REJECT_PO': {
-                await updatePO(action.payload.poId, { status: 'draft', remarks: 'MD Rejected: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() }, 'MD reject PO');
-                await syncIndentStatusForPO(action.payload.poId, 'po_draft', 'indent status after MD PO rejection');
-                break;
-            }
-
+            case 'MD_APPROVE_PO':
             case 'APPROVE_PO': {
-                await updatePO(action.payload.poId, { status: 'approved', updated_at: new Date().toISOString() }, 'approve PO');
-                await syncIndentStatusForPO(action.payload.poId, 'po_approved', 'indent status after PO approval');
+                await callPO('po_approve', { p_po_id: action.payload.poId });
                 break;
             }
 
+            case 'MD_REJECT_PO':
             case 'REJECT_PO': {
-                await updatePO(action.payload.poId, { status: 'draft', remarks: 'Rejected: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() }, 'reject PO');
-                await syncIndentStatusForPO(action.payload.poId, 'po_draft', 'indent status after PO rejection');
+                await callPO('po_reject', { p_po_id: action.payload.poId, p_reason: action.payload.reason || '' });
                 break;
             }
 
-            case 'ISSUE_PO': {
-                await updatePO(action.payload.poId, { status: 'issued', issued_at: new Date().toISOString(), updated_at: new Date().toISOString() }, 'issue PO');
-                await syncIndentStatusForPO(action.payload.poId, 'po_issued', 'indent status after PO issue');
-                break;
-            }
-
+            case 'ISSUE_PO':
             case 'FINALIZE_PO': {
-                await updatePO(action.payload.poId, { status: 'issued', issued_at: new Date().toISOString(), updated_at: new Date().toISOString() }, 'finalize PO');
-                await syncIndentStatusForPO(action.payload.poId, 'po_issued', 'indent status after PO finalize');
+                await callPO('po_issue', { p_po_id: action.payload.poId });
                 break;
             }
 
-            case 'RECEIVE_AGAINST_PO': {
-                var receipts = action.payload.receipts || [];
-                // Find the GRN the reducer just created: present in the post-reducer state
-                // for this PO but not in the pre-reducer state.
-                var _rap_preIds = {};
-                (state.grns || []).forEach(function(g) { _rap_preIds[g.id] = true; });
-                var _rap_newGrns = ((postState || {}).grns || []).filter(function(g) {
-                    return g.poId === action.payload.poId && !_rap_preIds[g.id];
-                });
-                var _rap_latestGrn = _rap_newGrns[_rap_newGrns.length - 1];
-                var grnId = _rap_latestGrn ? _rap_latestGrn.id : genUUID();
-                var grnNumber = _rap_latestGrn ? _rap_latestGrn.grnNumber : 'GRN-' + new Date().getFullYear() + '-' + Date.now().toString(36).toUpperCase();
-
-                // Insert GRN header
-                sbCheck(await supabaseClient.schema('indent_flow').from('grns').insert({
-                    id: grnId,
-                    grn_number: grnNumber,
-                    po_id: action.payload.poId,
-                    received_by: state.currentUserId,
-                    remarks: action.payload.remarks || '',
-                    photo_url: action.payload.photoUrl || '',
-                }), 'insert GRN');
-
-                // Insert GRN line items with quality fields
-                var grnItemRows = receipts.map(function(r) {
-                    return {
-                        id: genUUID(),
-                        grn_id: grnId,
-                        po_line_item_id: r.lineItemId,
-                        quantity_received: parseFloat(r.quantityReceived) || 0,
-                        remarks: r.remarks || '',
-                        condition: r.condition || 'Good',
-                        quality_remarks: r.qualityRemarks || '',
-                    };
-                });
-                if (grnItemRows.length > 0) {
-                    sbCheck(await supabaseClient.schema('indent_flow').from('grn_items').insert(grnItemRows), 'insert GRN items');
-                }
-
-                // Received quantities and the PO status (partially_fulfilled / fulfilled) are
-                // applied in the database by the trigger on grn_items, because the storekeeper
-                // role is not allowed to update purchase orders directly.
-                var _rap_po = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
-
-                // Sync discrepancy notifications — check if any receipts had non-Good condition
-                var _sync_discrepancies = [];
-                receipts.forEach(function(r) {
-                    if (r.condition && r.condition !== 'Good') {
-                        _sync_discrepancies.push(r.condition);
-                    }
-                });
-                if (_sync_discrepancies.length > 0 && _rap_po) {
-                    var _sync_msg = 'Quality issue in GRN ' + grnNumber + ' for PO ' + (getPODisplayId ? getPODisplayId(_rap_po) : action.payload.poId) + ': ' + _sync_discrepancies.length + ' item(s) flagged';
-                    var _sync_procUsers = (state.users || []).filter(function(u) { return u.role === 'procurement_manager'; });
-                    for (var ni = 0; ni < _sync_procUsers.length; ni++) {
-                        sbCheck(await supabaseClient.schema('indent_flow').from('notifications').insert({
-                            id: genUUID(),
-                            user_id: _sync_procUsers[ni].id,
-                            title: 'Quality issue on receipt',
-                            message: _sync_msg,
-                            link: '#po/' + action.payload.poId,
-                            is_read: false,
-                        }), 'insert discrepancy notification');
-                    }
-                }
+            case 'AMEND_PO': {
+                await callPO('po_amend', { p_po_id: action.payload.poId });
                 break;
             }
 
             case 'CLOSE_PO': {
-                await updatePO(action.payload.poId, { status: 'closed', updated_at: new Date().toISOString() }, 'close PO');
-                await syncIndentStatusForPO(action.payload.poId, 'completed', 'indent status after PO close');
+                await callPO('po_close', { p_po_id: action.payload.poId });
                 break;
             }
 
             case 'CANCEL_PO': {
-                await updatePO(action.payload.poId, { status: 'cancelled', remarks: 'Cancelled: ' + (action.payload.reason || ''), updated_at: new Date().toISOString() }, 'cancel PO');
+                await callPO('po_cancel', { p_po_id: action.payload.poId, p_reason: action.payload.reason || '' });
+                break;
+            }
+
+            case 'RECEIVE_AGAINST_PO': {
+                await callPO('po_receive', {
+                    p_po_id: action.payload.poId,
+                    p_receipts: (action.payload.receipts || []).map(function(r) {
+                        return {
+                            line_item_id: r.lineItemId,
+                            quantity: parseFloat(r.quantityReceived) || 0,
+                            condition: r.condition || 'Good',
+                            quality_remarks: r.qualityRemarks || '',
+                            remarks: r.remarks || '',
+                        };
+                    }),
+                    p_remarks: action.payload.remarks || '',
+                    p_photo_url: action.payload.photoUrl || '',
+                });
+                // The GRN number is assigned by the database: reload so the screen shows it
+                action._reload = true;
                 break;
             }
 
@@ -2297,12 +2256,6 @@ async function supabaseSync(action, state, postState) {
                 break;
             }
 
-            case 'REQUEST_MD_PO_APPROVAL': {
-                await updatePO(action.payload.poId, { status: 'pending_approval', updated_at: new Date().toISOString() }, 'request MD PO approval');
-                await syncIndentStatusForPO(action.payload.poId, 'pending_md_po_approval', 'indent status after MD approval request', action.payload.indentId);
-                break;
-            }
-
             // MD_APPROVE_PO, MD_REJECT_PO, and FINALIZE_PO are handled in the var-based section above
 
             case 'ATTACH_EXTERNAL_PO': {
@@ -2323,17 +2276,6 @@ async function supabaseSync(action, state, postState) {
                     user_id: state.currentUserId,
                     note: action.payload.reason || '',
                 }), 'save ' + action.type);
-                break;
-            }
-
-            case 'AMEND_PO': {
-                var _amd = { status: 'draft', remarks: 'Amended', updated_at: new Date().toISOString() };
-                // Persist the version bump the reducer applied (state is pre-reducer here)
-                var _amdPo = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
-                if (_amdPo) _amd.version = (_amdPo.version || 1) + 1;
-                await updatePO(action.payload.poId, _amd, 'amend PO');
-                await savePOVersionHistory(_amdPo, state.currentUserId, 'Amended after issue');
-                await syncIndentStatusForPO(action.payload.poId, 'po_draft', 'indent status after PO amendment');
                 break;
             }
 
@@ -2435,7 +2377,7 @@ async function supabaseSync(action, state, postState) {
             // Mark as handled first, so a later queued sync (e.g. the toast that follows)
             // does not save the same notification again.
             _newNotifs.forEach(function(n) { _syncedNotifIds[n.id] = true; });
-            if (action.type === 'RECEIVE_AGAINST_PO') _newNotifs = [];
+            if (DB_NOTIFIED_ACTIONS[action.type]) _newNotifs = [];
             if (_newNotifs.length > 0) {
                 var notifRows = _newNotifs.map(function(n) {
                     return {
@@ -3669,6 +3611,12 @@ function appReducer(state, action) {
                 ...state,
                 purchaseOrders: state.purchaseOrders.map(function(po) {
                     return po.id === action.payload.poId ? Object.assign({}, po, { status: 'cancelled', cancelledAt: new Date().toISOString(), cancelledBy: state.currentUserId, cancelReason: action.payload.reason || '' }) : po;
+                }),
+                // The indent goes back to procurement so a new PO can be raised
+                indents: state.indents.map(function(ind) {
+                    return ind.linkedPO === action.payload.poId
+                        ? Object.assign({}, ind, { status: 'in_procurement', linkedPO: null, activityLog: addActivityLog(ind, 'PO Cancelled', state.currentUserId, action.payload.reason || '') })
+                        : ind;
                 }),
             };
         }
@@ -6103,8 +6051,10 @@ function PODetailScreen(_ref) {
         className: 'btn btn-danger',
         onClick: function() {
           var reason = window.prompt('Rejection reason:');
-          if (reason !== null) {
-            dispatch({ type: 'MD_REJECT_PO', payload: { poId: po.id, reason: reason } });
+          if (reason !== null && !reason.trim()) {
+            dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please provide a rejection reason', type: 'error' } });
+          } else if (reason !== null) {
+            dispatch({ type: 'MD_REJECT_PO', payload: { poId: po.id, reason: reason.trim() } });
             dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO rejected', type: 'info' } });
           }
         }
@@ -11899,6 +11849,17 @@ function App() {
     // lands before the status update that follows it.
     var syncQueueRef = useRef(Promise.resolve());
 
+    // Replaces what is on screen with what is in the database
+    var reloadFromDb = function() {
+        var uid = stateRef.current.currentUserId;
+        if (!uid) return Promise.resolve();
+        return loadAllData(uid).then(function(data) {
+            rawDispatch({ type: 'LOAD_DATA', payload: data });
+        }).catch(function(reloadErr) {
+            console.error('[NC_MIS] Reload from database failed:', reloadErr);
+        });
+    };
+
     var dispatch = useCallback(function(action) {
         var entry = { ts: new Date().toISOString(), type: action.type, userId: stateRef.current.currentUserId };
         if (action.payload && action.payload.indentId) entry.indentId = action.payload.indentId;
@@ -11920,19 +11881,15 @@ function App() {
             return new Promise(function(resolve) { setTimeout(resolve, 25); });
         }).then(function() {
             return supabaseSync(action, preState, stateRef.current);
+        }).then(function() {
+            // Some saves produce values only the database knows (e.g. a GRN number)
+            if (action._reload) return reloadFromDb();
         }).catch(function(err) {
             console.error('[NC_MIS] Sync failed for ' + action.type + ':', err);
             rawDispatch({ type: 'SHOW_TOAST', payload: { message: 'Not saved: ' + err.message, type: 'error' } });
             // The screen already shows the change; reload from the database so it
             // goes back to what is actually saved.
-            var uid = stateRef.current.currentUserId;
-            if (uid) {
-                return loadAllData(uid).then(function(data) {
-                    rawDispatch({ type: 'LOAD_DATA', payload: data });
-                }).catch(function(reloadErr) {
-                    console.error('[NC_MIS] Reload after failed save also failed:', reloadErr);
-                });
-            }
+            return reloadFromDb();
         });
     }, []);
 
