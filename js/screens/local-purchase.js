@@ -35,7 +35,7 @@ function visibleLocalPurchases(state) {
 
 function localPurchaseFields(state) {
   return [
-    { key: 'number', label: 'Number', get: function(lp) { return lp.lpNumber; } },
+    { key: 'number', label: 'Number', id: true, get: function(lp) { return lp.lpNumber; } },
     { key: 'created', label: 'Recorded date', type: 'date', get: function(lp) { return lp.createdAt; } },
     { key: 'bill', label: 'Bill date', type: 'date', get: function(lp) { return lp.billDate; } },
     { key: 'value', label: 'Value', type: 'number', get: function(lp) { return lp.totalAmount; } },

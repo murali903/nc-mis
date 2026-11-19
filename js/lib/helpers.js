@@ -109,3 +109,22 @@ function getStorePOs(state) {
     return !!po.siteId && siteIds.includes(po.siteId);
   });
 }
+
+// How an indent's material is coming, for the storekeeper: read from the
+// "Dispatched" entry on its timeline, or said plainly when nothing was dispatched.
+function dispatchSummary(indent) {
+  var log = (indent.activityLog || []).filter(function(a) { return a.action === 'Dispatched'; }).pop();
+  if (!log) {
+    return indent.status === 'dispatched' ? 'Dispatched' : 'Not dispatched yet: approved, material may still arrive';
+  }
+  var part = function(label) {
+    var m = String(log.note || '').match(new RegExp(label + ':\\s*([^|]*)'));
+    return m ? m[1].trim() : '';
+  };
+  var bits = [];
+  if (part('Vendor')) bits.push('From ' + part('Vendor'));
+  if (part('ETA')) bits.push('expected ' + part('ETA'));
+  if (part('Ref')) bits.push('ref ' + part('Ref'));
+  if (part('Notes')) bits.push(part('Notes'));
+  return 'Sent without a PO' + (bits.length ? ': ' + bits.join(', ') : '');
+}

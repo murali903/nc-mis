@@ -150,8 +150,15 @@ function LoginPage() {
 
   return React.createElement('div', { className: 'login-container' },
     React.createElement('div', { className: 'login-card' },
+      React.createElement('div', { className: 'login-brand' },
+        React.createElement('img', { src: 'img/navya-logo.png', alt: 'Navya Constructions' }),
+        React.createElement('div', null,
+          React.createElement('div', { className: 'login-brand-name' }, 'Navya Constructions'),
+          React.createElement('div', { className: 'login-brand-since' }, 'Since 1997')
+        )
+      ),
       React.createElement('div', { className: 'login-title' }, 'IndentFlow'),
-      React.createElement('div', { className: 'login-subtitle' }, 'Material Indent Management System'),
+      React.createElement('div', { className: 'login-subtitle' }, 'Material indents and purchase orders'),
 
       loginError ? React.createElement('div', { className: 'login-error' }, loginError) : null,
 
@@ -233,20 +240,15 @@ function Navbar() {
 
   return React.createElement('nav', {
     style: {
-      background: 'linear-gradient(135deg, #1e293b, #334155)',
-      color: '#fff', padding: '0 24px', height: 56,
+      background: '#111827', borderBottom: '3px solid #b91c1c',
+      color: '#fff', padding: '0 24px', height: 56, boxSizing: 'border-box',
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+      boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
     }
   },
     React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 12 } },
-      React.createElement('span', { style: { fontSize: 22, fontWeight: 800 } }, 'IndentFlow'),
-      React.createElement('span', {
-        style: {
-          fontSize: 10, background: '#6366f1', padding: '2px 8px',
-          borderRadius: 10, fontWeight: 600,
-        }
-      }, 'v3')
+      React.createElement('span', { style: { fontSize: 20, fontWeight: 800, letterSpacing: '-0.01em' } }, 'IndentFlow'),
+      React.createElement('span', { style: { fontSize: 12, color: '#9ca3af', borderLeft: '1px solid #374151', paddingLeft: 12 } }, 'Material indents and purchase orders')
     ),
     React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 16 } },
       React.createElement('div', { style: { position: 'relative' } },
@@ -377,19 +379,26 @@ function Sidebar() {
 
   return React.createElement('div', {
     style: {
-      width: 240, background: '#f8fafc', borderRight: '1px solid #e2e8f0',
+      width: 240, background: '#fff', borderRight: '1px solid #e2e8f0',
       padding: '16px 0', minHeight: 'calc(100vh - 56px)',
     }
   },
+    React.createElement('div', { className: 'brand-side' },
+      React.createElement('img', { src: 'img/navya-logo.png', alt: '' }),
+      React.createElement('div', null,
+        React.createElement('div', { className: 'n' }, 'Navya Constructions'),
+        React.createElement('div', { className: 's' }, getRoleBadge(user.role))
+      )
+    ),
     items.map(item =>
       React.createElement('a', {
         key: item.hash,
         href: item.hash,
         style: {
           display: 'block', padding: '10px 24px', fontSize: 14,
-          color: hash === item.hash ? '#6366f1' : '#475569',
-          background: hash === item.hash ? '#eef2ff' : 'transparent',
-          borderRight: hash === item.hash ? '3px solid #6366f1' : '3px solid transparent',
+          color: hash === item.hash ? '#b91c1c' : '#475569',
+          background: hash === item.hash ? '#fef2f2' : 'transparent',
+          borderLeft: hash === item.hash ? '3px solid #b91c1c' : '3px solid transparent',
           textDecoration: 'none', fontWeight: hash === item.hash ? 700 : 500,
           transition: 'all 0.15s ease',
         }
@@ -429,10 +438,10 @@ function StatusBadge({ status }) {
   return React.createElement('span', {
     style: {
       display: 'inline-block', padding: '3px 10px', borderRadius: 12,
-      fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-      backgroundColor: s.bg, color: s.color,
+      fontSize: 11.5, fontWeight: 700,
+      backgroundColor: s.bg, color: s.color, whiteSpace: 'nowrap',
     }
-  }, status);
+  }, typeof statusLabel === 'function' ? statusLabel(status) : status);
 }
 
 function PriorityBadge({ priority }) {

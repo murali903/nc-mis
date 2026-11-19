@@ -64,6 +64,11 @@ function GRNRecordingSection(_ref) {
         });
       }
     });
+    var negativeLine = po.lineItems.find(function(li) { return parseFloat(receiving[li.id]) < 0; });
+    if (negativeLine) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: (negativeLine.description || 'Item') + ': quantity cannot be negative', type: 'error' } });
+      return;
+    }
     if (receipts.length === 0) {
       dispatch({ type: 'SHOW_TOAST', payload: { message: 'Enter at least one quantity to receive', type: 'error' } });
       return;

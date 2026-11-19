@@ -216,8 +216,8 @@ function StoreGRNHistoryScreen() {
     });
     var poOfGrn = function(g) { return storePOs.find(function(po) { return po.id === g.poId; }); };
     var grnList = useListControls(allStoreGrns, [
-        { key: 'number', label: 'GRN number', get: function(g) { return g.grnNumber || ''; } },
-        { key: 'po', label: 'PO number', get: function(g) { var po = poOfGrn(g); return po ? getPODisplayId(po) : ''; } },
+        { key: 'number', label: 'GRN number', id: true, get: function(g) { return g.grnNumber || ''; } },
+        { key: 'po', label: 'PO number', id: true, get: function(g) { var po = poOfGrn(g); return po ? getPODisplayId(po) : ''; } },
         { key: 'date', label: 'Date', type: 'date', get: function(g) { return g.createdAt || g.receivedAt; } },
         { key: 'vendor', label: 'Vendor', get: function(g) { var po = poOfGrn(g); return po ? (po.vendorName || '') : ''; } },
         { key: 'by', label: 'Received by', get: function(g) { return getUserName(g.receivedBy, state.users); } },
@@ -333,7 +333,10 @@ function StorePendingScreen() {
                             React.createElement('td', null,
                                 React.createElement('a', { href: '#receipt/' + indent.id, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId(indent, state.indents))
                             ),
-                            React.createElement('td', null, indent.lineItems.map(li => li.name || li.description).join(', ')),
+                            React.createElement('td', null,
+                                indent.lineItems.map(li => li.name || li.description).join(', '),
+                                React.createElement('div', { style: { fontSize: 12, color: '#64748b', marginTop: 2 } }, dispatchSummary(indent))
+                            ),
                             React.createElement('td', null, React.createElement(StatusBadge, { status: indent.status })),
                             React.createElement('td', null, indent.lineItems.length),
                             React.createElement('td', null, new Date(indent.createdAt).toLocaleDateString()),
@@ -425,6 +428,8 @@ function StoreNewIndentScreen() {
     const handleSubmit = () => {
         if (!selectedSite) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Site is required', type: 'error' } }); return; }
         if (!description.trim()) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Description is required', type: 'error' } }); return; }
+        if (!requiredDate) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Required date is mandatory when submitting for approval', type: 'error' } }); return; }
+        if (requiredDate < new Date().toISOString().split('T')[0]) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Required date cannot be in the past', type: 'error' } }); return; }
         if (lineItems.some(li => !li.description.trim() || !li.qty)) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'All line items must have description and quantity', type: 'error' } }); return; }
         if (lineItems.some(li => parseFloat(li.qty) <= 0 || li.qty === '')) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'All items must have a quantity above zero', type: 'error' } }); return; }
         if (lineItems.some(li => !li.isBoq && !li.nonBoqReason.trim())) { dispatch({ type: 'SHOW_TOAST', payload: { message: 'Non-BOQ items require a reason', type: 'error' } }); return; }

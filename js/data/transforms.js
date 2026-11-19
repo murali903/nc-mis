@@ -199,13 +199,16 @@ function lineTotal(li) {
 function hydratePOs(pos, vendors) {
     return (pos || []).map(function(po) {
         var patch = {};
+        // The value shown is always worked out from the items, as the database does
+        if (po.lineItems && po.lineItems.length) {
+            var worked = Math.round(po.lineItems.reduce(function(sum, li) { return sum + (li.amountWithGst || 0); }, 0) * 100) / 100;
+            if (worked > 0 && Math.abs(worked - (po.totalAmount || 0)) > 0.5) patch.totalAmount = worked;
+        }
         if (!po.vendorName) {
             var v = (vendors || []).find(function(x) { return x.id === po.vendorId; });
             if (v) patch.vendorName = v.name;
         }
-        if (!po.totalAmount && po.lineItems && po.lineItems.length) {
-            patch.totalAmount = po.lineItems.reduce(function(sum, li) { return sum + (li.amountWithGst || 0); }, 0);
-        }
+
         return (patch.vendorName !== undefined || patch.totalAmount !== undefined) ? Object.assign({}, po, patch) : po;
     });
 }

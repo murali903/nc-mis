@@ -66,9 +66,12 @@ function useListControls(rows, fields, opts) {
   var out = all;
 
   if (term.trim()) {
+    // A wildcard (*33) is about numbers: it looks only at the number-like fields
+    var wild = term.indexOf('*') !== -1 && fields.some(function(f) { return f.id; });
     out = out.filter(function(row) {
       return fields.some(function(f) {
         if (f.noSearch) return false;
+        if (wild && !f.id) return false;
         return fieldSearchStrings(f, row).some(function(s) { return textMatches(s, term); });
       });
     });
@@ -132,7 +135,7 @@ function statusLabel(status) { return STATUS_LABELS[status] || String(status || 
 // Search / sort fields for any list of indents
 function indentListFields(state) {
   return [
-    { key: 'number', label: 'Indent number', get: function(i) { return getIndentDisplayId(i, state.indents); } },
+    { key: 'number', label: 'Indent number', id: true, get: function(i) { return getIndentDisplayId(i, state.indents); } },
     { key: 'created', label: 'Created date', type: 'date', get: function(i) { return i.createdAt; } },
     { key: 'required', label: 'Required date', type: 'date', get: function(i) { return i.requiredDate; } },
     { key: 'items', label: 'Number of items', type: 'number', noSearch: true, get: function(i) { return (i.lineItems || []).length; } },
@@ -150,8 +153,8 @@ function indentListFields(state) {
 function poListFields(state) {
   var indentOf = function(po) { return (state.indents || []).find(function(i) { return i.id === po.indentId; }); };
   return [
-    { key: 'number', label: 'PO number', get: function(po) { return getPODisplayId(po); } },
-    { key: 'indent', label: 'Indent number', get: function(po) { var i = indentOf(po); return i ? getIndentDisplayId(i, state.indents) : ''; } },
+    { key: 'number', label: 'PO number', id: true, get: function(po) { return getPODisplayId(po); } },
+    { key: 'indent', label: 'Indent number', id: true, get: function(po) { var i = indentOf(po); return i ? getIndentDisplayId(i, state.indents) : ''; } },
     { key: 'created', label: 'Created date', type: 'date', get: function(po) { return po.createdAt; } },
     { key: 'delivery', label: 'Delivery date', type: 'date', get: function(po) { return po.deliveryDate; } },
     { key: 'value', label: 'Value', type: 'number', get: function(po) { return po.totalAmount || 0; } },
