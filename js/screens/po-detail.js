@@ -702,7 +702,15 @@ function PODetailScreen(_ref) {
       (isPOManager && po.status === 'fulfilled') && React.createElement('button', { className: 'btn btn-success', onClick: function() { openMode('close'); } }, 'Close PO'),
 
       React.createElement('button', { className: 'btn btn-primary', onClick: handlePrint }, 'Print / Save as PDF'),
-      canManagePO && (po.status === 'approved' || po.status === 'issued') && React.createElement('button', { className: 'btn btn-secondary', onClick: handleMailto }, 'Email Vendor')
+      canManagePO && (po.status === 'approved' || po.status === 'issued') && React.createElement('button', { className: 'btn btn-secondary', onClick: handleMailto }, 'Email Vendor'),
+      // Only an issued order goes to the vendor
+      (canManagePO && (po.status === 'issued' || po.status === 'partially_fulfilled')) && React.createElement('a', {
+        className: 'btn', href: poWhatsAppLink(po, state), target: '_blank', rel: 'noopener noreferrer',
+        style: { textDecoration: 'none', backgroundColor: '#128c7e', color: '#fff' },
+        title: (vendor && whatsappNumber(vendor.phone))
+          ? 'Opens WhatsApp with this order written out, addressed to ' + vendor.phone
+          : 'No usable phone number for this vendor: WhatsApp will ask whom to send it to'
+      }, 'Share on WhatsApp')
     ),
 
     poDecisions[mode] ? React.createElement('div', {

@@ -164,6 +164,55 @@ function inr(n) {
   return (Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// A phone number as WhatsApp wants it: digits only, with the country code.
+// Ten digits are taken to be an Indian mobile number. Returns '' if unusable.
+function whatsappNumber(phone) {
+  var d = String(phone || '').replace(/\D/g, '');
+  if (d.length === 11 && d.charAt(0) === '0') d = d.slice(1);
+  if (d.length === 10) return '91' + d;
+  if (d.length === 12 && d.indexOf('91') === 0) return d;
+  return d.length >= 11 && d.length <= 15 ? d : '';
+}
+
+// The purchase order as a short WhatsApp message (plain text; *bold* is WhatsApp's own marking)
+function poWhatsAppText(po, state) {
+  var settings = state.orgSettings || {};
+  var company = settings.companyName || 'Navya Constructions';
+  var site = poSiteOf(po, state);
+  var terms = cleanPOTerms(po.terms);
+  var dateOf = function(d) { return d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : ''; };
+  var lines = [
+    '*Purchase Order ' + getPODisplayId(po) + '*',
+    'From: ' + company,
+    'To: M/s ' + (po.vendorName || ''),
+    'Date: ' + dateOf(po.issuedAt || po.createdAt),
+    '',
+    '*Items*',
+  ];
+  (po.lineItems || []).forEach(function(li, i) {
+    var qty = Number(li.quantity || li.qty) || 0, rate = Number(li.rate) || 0;
+    lines.push((i + 1) + '. ' + (li.description || li.name || '') + ' - ' + qty + ' ' + (li.unit || '') + ' @ Rs. ' + inr(rate) + (li.gstPercent ? ' + ' + li.gstPercent + '% GST' : ''));
+  });
+  lines.push('', '*Total: Rs. ' + inr(po.totalAmount) + '* (including GST)');
+  if (po.deliveryDate) lines.push('Delivery by: ' + dateOf(po.deliveryDate));
+  var address = po.deliveryAddress || (site ? site.name + ', ' + site.location : '');
+  if (address) lines.push('Deliver to: ' + address);
+  if (terms.siteContact || terms.sitePhone) lines.push('Site contact: ' + [terms.siteContact, terms.sitePhone].filter(Boolean).join(', '));
+  if (po.paymentTerms) lines.push('Payment: ' + po.paymentTerms);
+  if (terms.freight) lines.push('Freight: ' + terms.freight);
+  if (terms.special) lines.push('Note: ' + terms.special);
+  lines.push('', 'The signed purchase order follows as a PDF. Please confirm receipt of this order.');
+  return lines.join('\n');
+}
+
+// Link that opens WhatsApp with the message ready: to the vendor's number when we
+// have a usable one, otherwise WhatsApp asks whom to send it to.
+function poWhatsAppLink(po, state) {
+  var vendor = (state.vendors || []).find(function(v) { return v.id === po.vendorId; }) || {};
+  var number = whatsappNumber(vendor.phone);
+  return 'https://wa.me/' + number + '?text=' + encodeURIComponent(poWhatsAppText(po, state));
+}
+
 // Opens the purchase order, laid out on the company letterhead, ready to print
 // or save as PDF. Returns false if the browser blocked the window.
 function printPurchaseOrder(po, state) {
