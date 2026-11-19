@@ -1,7 +1,7 @@
 # nc-mis — IndentFlow
 
-Material indent and purchase-order management for Navyacon Construction. First
-module of the Navyacon MIS.
+Material indent and purchase-order management for Navya Constructions. First
+module of the Navya MIS.
 
 - **Live:** https://nc-mis.vercel.app
 - **Dev / test address:** https://nc-mis-dev.vercel.app (same build and database)

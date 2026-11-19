@@ -301,7 +301,7 @@
             align-items: center;
             justify-content: center;
             height: 100vh;
-            background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+            background: radial-gradient(1200px 700px at 20% 10%, #374151 0%, #111827 55%, #0b1220 100%);
         }
 
         .login-card {
@@ -324,7 +324,7 @@
         }
 
         .login-brand img {
-            height: 58px;
+            height: 72px;
             width: auto;
         }
 
