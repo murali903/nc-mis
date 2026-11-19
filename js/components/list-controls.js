@@ -328,7 +328,8 @@ var QUOTE_CATEGORIES = ['Quotation', 'Comparative Statement', 'Proforma Invoice'
 // Quotation files attached to a PO
 function poQuoteDocs(po, state) {
   var indent = ((state && state.indents) || []).find(function(i) { return i.id === po.indentId; });
-  return indent ? (indent.documents || []).filter(function(d) { return d.poId === po.id; }) : [];
+  if (indent) return (indent.documents || []).filter(function(d) { return d.poId === po.id; });
+  return po.documents || [];   // a PO without an indent carries its own files
 }
 
 // Pass state so the quotation rule can be checked too.
@@ -337,6 +338,7 @@ function poMissingFields(po, state) {
   if (!po.vendorId) missing.push('vendor');
   if (!po.deliveryDate) missing.push('delivery date');
   if (!String(po.notes || '').trim()) missing.push('remarks');
+  if (!po.indentId && !String(po.noIndentReason || '').trim()) missing.push('the reason there is no indent');
   var items = po.lineItems || [];
   if (state && !String(po.noQuoteReason || '').trim()
       && !poQuoteDocs(po, state).some(function(d) { return QUOTE_CATEGORIES.indexOf(d.category) !== -1; })) {

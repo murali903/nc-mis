@@ -73,6 +73,59 @@ function transformVendor(row) {
     };
 }
 
+function transformDocument(d) {
+    return {
+        id: d.id,
+        name: d.name || d.file_name || '',
+        category: d.category || '',
+        storagePath: d.storage_path || '',
+        uploadedBy: d.uploaded_by || '',
+        uploadedAt: d.uploaded_at || d.created_at || '',
+        size: d.size || 0,
+        mimeType: d.mime_type || '',
+        lineItemId: d.line_item_id || null,
+        poId: d.po_id || null,
+    };
+}
+
+function transformLocalPurchase(row) {
+    return {
+        id: row.id,
+        lpNumber: row.lp_number || '',
+        siteId: row.site_id,
+        vendorId: row.vendor_id || null,
+        vendorName: row.vendor_name || '',
+        vendorPhone: row.vendor_phone || '',
+        vendorGstin: row.vendor_gstin || '',
+        vendorAddress: row.vendor_address || '',
+        billNumber: row.bill_number || '',
+        billDate: row.bill_date || '',
+        reason: row.reason || '',
+        paymentMode: row.payment_mode || '',
+        totalAmount: Number(row.total_amount) || 0,
+        billFiles: Array.isArray(row.bill_files) ? row.bill_files : [],
+        status: row.status || 'pending_approval',
+        createdBy: row.created_by,
+        createdAt: row.created_at,
+        decidedBy: row.decided_by || null,
+        decidedAt: row.decided_at || null,
+        decisionRemarks: row.decision_remarks || '',
+        items: (row.local_purchase_items || []).slice().sort(function(a, b) {
+            return (a.position || 0) - (b.position || 0);
+        }).map(function(li) {
+            return {
+                id: li.id,
+                description: li.description || '',
+                quantity: Number(li.quantity) || 0,
+                unit: li.unit || '',
+                rate: Number(li.rate) || 0,
+                gstPercent: Number(li.gst_percent) || 0,
+                amount: Number(li.amount) || 0,
+            };
+        }),
+    };
+}
+
 function transformIndent(row) {
     var indent = {
         id: row.id,
@@ -110,6 +163,8 @@ function transformIndent(row) {
                 isBoq: li.is_boq !== undefined ? li.is_boq : true,
                 isBoqItem: li.is_boq !== undefined ? li.is_boq : true,
                 nonBoqReason: li.non_boq_reason || undefined,
+                remarks: li.remarks || '',
+                boqReference: li.boq_reference || '',
             };
         }),
         comments: (row.indent_comments || []).map(function(c) {
@@ -128,20 +183,7 @@ function transformIndent(row) {
                 note: a.note || '',
             };
         }),
-        documents: (row.indent_documents || []).map(function(d) {
-            return {
-                id: d.id,
-                name: d.name || d.file_name || '',
-                category: d.category || '',
-                storagePath: d.storage_path || '',
-                uploadedBy: d.uploaded_by || '',
-                uploadedAt: d.uploaded_at || d.created_at || '',
-                size: d.size || 0,
-                mimeType: d.mime_type || '',
-                lineItemId: d.line_item_id || null,
-                poId: d.po_id || null,
-            };
-        }),
+        documents: (row.indent_documents || []).map(transformDocument),
     };
     return indent;
 }
@@ -203,6 +245,9 @@ function transformPO(row) {
         closeRemarks: row.close_remarks || '',
         approvalRoute: row.approval_route || '',
         noQuoteReason: row.no_quote_reason || '',
+        siteId: row.site_id || null,
+        noIndentReason: row.no_indent_reason || '',
+        terms: (row.terms && typeof row.terms === 'object') ? row.terms : {},
         vendorName: row.vendor_name || '',
         totalAmount: Number(row.total_amount) || 0,
         lineItems: (row.po_line_items || []).slice().sort(function(a, b) {

@@ -346,6 +346,10 @@ function App() {
         if (hash.startsWith('#create-po/')) return { screen: 'create-po', indentId: hash.split('/')[1] };
         if (hash === '#procurement-review') return { screen: 'procurement-progress' };
         if (hash === '#procurement-pos') return { screen: 'procurement-pos' };
+        if (hash === '#create-po-direct') return { screen: 'create-po-direct' };
+        if (hash === '#local-purchases') return { screen: 'local-purchases' };
+        if (hash === '#local-purchase-new') return { screen: 'local-purchase-new' };
+        if (hash.startsWith('#local-purchase/')) return { screen: 'local-purchase', id: hash.split('/')[1] };
         if (hash === '#procurement-vendors') return { screen: 'procurement-vendors' };
         if (hash === '#md-escalations') return { screen: 'md-escalations' };
         if (hash === '#md-po-approvals') return { screen: 'md-po-approvals' };
@@ -432,6 +436,14 @@ function App() {
         screenContent = React.createElement(StoreAllScreen, null);
     } else if (routeInfo.screen === 'history') {
         screenContent = React.createElement(CompletedOrdersScreen, null);
+    } else if (routeInfo.screen === 'create-po-direct') {
+        screenContent = React.createElement(CreateDirectPOScreen, null);
+    } else if (routeInfo.screen === 'local-purchases') {
+        screenContent = React.createElement(LocalPurchasesScreen, null);
+    } else if (routeInfo.screen === 'local-purchase-new') {
+        screenContent = React.createElement(LocalPurchaseNewScreen, null);
+    } else if (routeInfo.screen === 'local-purchase' && routeInfo.id) {
+        screenContent = React.createElement(LocalPurchaseDetailScreen, { id: routeInfo.id });
     } else if (routeInfo.screen === 'procurement-pos') {
         screenContent = React.createElement(ProcurementPOsScreen, null);
     } else if (routeInfo.screen === 'procurement-vendors') {

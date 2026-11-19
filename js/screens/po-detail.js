@@ -275,7 +275,9 @@ function PODocumentsSection(_ref) {
   var busy = _busy[0], setBusy = _busy[1];
 
   var indent = (state.indents || []).find(function(i) { return i.id === po.indentId; });
-  var docs = indent ? (indent.documents || []).filter(function(d) { return d.poId === po.id; }) : [];
+  var docs = poQuoteDocs(po, state);
+  var indentIdOrNull = indent ? indent.id : null;
+  var folder = indent ? indent.id : ('po-' + po.id);
   var categories = ['Quotation', 'Comparative Statement', 'Proforma Invoice', 'Estimate', 'Purchase Order', 'Delivery Challan', 'Other'];
 
   var upload = function() {
@@ -284,13 +286,12 @@ function PODocumentsSection(_ref) {
       dispatch({ type: 'SHOW_TOAST', payload: { message: 'Please select a file', type: 'error' } });
       return;
     }
-    if (!indent) return;
     var picked = Array.prototype.slice.call(input.files).map(function(f) { return { file: f, category: category, itemIndex: '' }; });
     setBusy(true);
-    uploadPickedFiles(indent.id, picked, null, po.id).then(function(uploaded) {
+    uploadPickedFiles(folder, picked, null, po.id).then(function(uploaded) {
       uploaded.forEach(function(doc) {
         doc.uploadedBy = state.currentUserId;
-        dispatch({ type: 'ADD_DOCUMENT', payload: { indentId: indent.id, document: doc } });
+        dispatch({ type: 'ADD_DOCUMENT', payload: { indentId: indentIdOrNull, document: doc } });
       });
       dispatch({ type: 'SHOW_TOAST', payload: { message: uploaded.length === 1 ? 'File attached' : uploaded.length + ' files attached', type: 'success' } });
       if (fileRef.current) fileRef.current.value = '';
@@ -301,7 +302,7 @@ function PODocumentsSection(_ref) {
 
   var remove = function(doc) {
     if (!confirm('Remove "' + doc.name + '" from this PO?')) return;
-    dispatch({ type: 'DELETE_DOCUMENT', payload: { indentId: indent.id, documentId: doc.id, documentName: doc.name } });
+    dispatch({ type: 'DELETE_DOCUMENT', payload: { indentId: indentIdOrNull, documentId: doc.id, documentName: doc.name } });
     dispatch({ type: 'SHOW_TOAST', payload: { message: 'File removed', type: 'success' } });
   };
 
@@ -367,6 +368,9 @@ function PODetailScreen(_ref) {
   var editForm = _editForm[0];
   var setEditForm = _editForm[1];
 
+  var _linkTo = useState('');
+  var linkTo = _linkTo[0], setLinkTo = _linkTo[1];
+
   // Decision being entered: '', approve, reject, close, cancel
   var _mode = useState('');
   var mode = _mode[0], setMode = _mode[1];
@@ -389,6 +393,9 @@ function PODetailScreen(_ref) {
       paymentTerms: po.paymentTerms || '',
       notes: po.notes || '',
       noQuoteReason: po.noQuoteReason || '',
+      deliveryAddress: po.deliveryAddress || '',
+      terms: Object.assign({}, po.terms || {}),
+      noIndentReason: po.noIndentReason || '',
       lineItems: po.lineItems.map(function(li) { return Object.assign({}, li); })
     });
     setEditing(true);
@@ -432,7 +439,7 @@ function PODetailScreen(_ref) {
       dispatch({ type: 'SHOW_TOAST', payload: { message: 'Quantity must be above zero for "' + (badLine.description || 'item') + '"', type: 'error' } });
       return;
     }
-    dispatch({ type: 'UPDATE_PO', payload: { poId: po.id, updates: { vendorId: editForm.vendorId, deliveryDate: editForm.deliveryDate || null, paymentTerms: editForm.paymentTerms, notes: editForm.notes, noQuoteReason: (editForm.noQuoteReason || '').trim(), lineItems: editForm.lineItems, totalAmount: newTotalAmount }, note: 'Edited PO to version ' + newVersion } });
+    dispatch({ type: 'UPDATE_PO', payload: { poId: po.id, updates: { vendorId: editForm.vendorId, deliveryDate: editForm.deliveryDate || null, paymentTerms: editForm.paymentTerms, notes: editForm.notes, noQuoteReason: (editForm.noQuoteReason || '').trim(), deliveryAddress: editForm.deliveryAddress, terms: cleanPOTerms(editForm.terms), noIndentReason: po.indentId ? undefined : (editForm.noIndentReason || '').trim(), lineItems: editForm.lineItems, totalAmount: newTotalAmount }, note: 'Edited PO to version ' + newVersion } });
     dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO updated to version ' + newVersion, type: 'success' } });
     setEditing(false);
     setEditForm(null);
@@ -444,62 +451,9 @@ function PODetailScreen(_ref) {
   };
 
   var handlePrint = function() {
-    var printWin = window.open('', '_blank');
-    if (!printWin) return;
-
-    // Look up office from indent -> site -> office
-    var indent = (state.indents || []).find(function(ind) { return ind.id === po.indentId; });
-    var site = indent ? (state.sites || []).find(function(s) { return s.id === indent.siteId; }) : null;
-    var office = site ? (state.offices || []).find(function(o) { return o.id === site.officeId; }) : null;
-
-    var printCompanyName = orgSettings.companyName || '';
-    var printAddress = office ? office.address : (orgSettings.companyAddress || '');
-    var printPhone = office ? office.phone : (orgSettings.companyPhone || '');
-    var printGSTIN = office ? office.gstin : (orgSettings.companyGSTIN || '');
-    var printPAN = office ? office.pan : (orgSettings.companyPAN || '');
-
-    var lineRows = po.lineItems.map(function(li, i) {
-      return '<tr>' +
-        '<td style="border:1px solid #ccc;padding:6px;">' + (i + 1) + '</td>' +
-        '<td style="border:1px solid #ccc;padding:6px;">' + (li.description || li.name || '') + '</td>' +
-        '<td style="border:1px solid #ccc;padding:6px;text-align:center;">' + (li.quantity || 0) + '</td>' +
-        '<td style="border:1px solid #ccc;padding:6px;">' + (li.unit || '') + '</td>' +
-        '<td style="border:1px solid #ccc;padding:6px;text-align:right;">' + (Number(li.rate) || 0).toFixed(2) + '</td>' +
-        '<td style="border:1px solid #ccc;padding:6px;text-align:right;">' + (li.gstPercent || 0) + '%</td>' +
-        '<td style="border:1px solid #ccc;padding:6px;text-align:right;">' + (Number(li.gstAmount) || 0).toFixed(2) + '</td>' +
-        '<td style="border:1px solid #ccc;padding:6px;text-align:right;">' + lineTotal(li).toFixed(2) + '</td>' +
-        '</tr>';
-    }).join('');
-    var html = '<!DOCTYPE html><html><head><title>' + escapeHtml(getPODisplayId(po)) + '</title>' +
-      '<style>body{font-family:Arial,sans-serif;padding:30px;} table{border-collapse:collapse;width:100%;margin-top:10px;} @media print{button{display:none;}}</style>' +
-      '</head><body>' +
-      '<div style="text-align:center;margin-bottom:20px;">' +
-      '<h2 style="margin:0;">' + printCompanyName + '</h2>' +
-      (office ? '<p style="margin:2px 0;font-size:12px;color:#666;">' + office.name + '</p>' : '') +
-      '<p style="margin:4px 0;font-size:13px;">' + printAddress + '</p>' +
-      '<p style="margin:2px 0;font-size:13px;">Phone: ' + printPhone + ' | GSTIN: ' + printGSTIN + ' | PAN: ' + printPAN + '</p>' +
-      '</div>' +
-      '<h3 style="text-align:center;margin-bottom:16px;">PURCHASE ORDER</h3>' +
-      '<table><tr><td><strong>PO Number:</strong> ' + getPODisplayId(po) + '</td><td><strong>Date:</strong> ' + new Date(po.createdAt).toLocaleDateString('en-IN') + '</td></tr>' +
-      '<tr><td><strong>Vendor:</strong> ' + po.vendorName + '</td><td><strong>Delivery Date:</strong> ' + (po.deliveryDate || 'N/A') + '</td></tr>' +
-      '<tr><td><strong>Status:</strong> ' + po.status + '</td><td><strong>Version:</strong> ' + (po.version || 1) + '</td></tr>' +
-      '<tr><td colspan="2"><strong>Payment Terms:</strong> ' + (po.paymentTerms || 'N/A') + '</td></tr></table>' +
-      '<table style="margin-top:16px;"><thead><tr style="background:#f3f4f6;">' +
-      '<th style="border:1px solid #ccc;padding:6px;">#</th>' +
-      '<th style="border:1px solid #ccc;padding:6px;">Description</th>' +
-      '<th style="border:1px solid #ccc;padding:6px;">Qty</th>' +
-      '<th style="border:1px solid #ccc;padding:6px;">Unit</th>' +
-      '<th style="border:1px solid #ccc;padding:6px;">Rate</th>' +
-      '<th style="border:1px solid #ccc;padding:6px;">GST%</th>' +
-      '<th style="border:1px solid #ccc;padding:6px;">GST Amt</th>' +
-      '<th style="border:1px solid #ccc;padding:6px;">Amount</th>' +
-      '</tr></thead><tbody>' + lineRows + '</tbody></table>' +
-      '<p style="text-align:right;font-weight:bold;margin-top:12px;">Total: Rs. ' + (po.totalAmount || 0).toFixed(2) + '</p>' +
-      (po.notes ? '<p><strong>Remarks:</strong> ' + escapeHtml(po.notes) + '</p>' : '') +
-      '<br/><button onclick="window.print()">Print</button>' +
-      '</body></html>';
-    printWin.document.write(html);
-    printWin.document.close();
+    if (!printPurchaseOrder(po, state)) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'The browser blocked the print window. Allow pop-ups for this site and try again.', type: 'error' } });
+    }
   };
 
   var handleMailto = function() {
@@ -636,8 +590,42 @@ function PODetailScreen(_ref) {
         ) : null,
         po.indentId ? React.createElement('div', { style: { gridColumn: '1 / -1' } },
           React.createElement('span', { style: { color: '#6b7280' } }, 'Linked Indent: '),
-          React.createElement('a', { href: '#indent/' + po.indentId, style: { color: '#3b82f6' } }, getIndentDisplayId((state.indents || []).find(function(i) { return i.id === po.indentId; }) || { id: po.indentId }, state.indents))
-        ) : null
+          React.createElement('a', { href: '#indent/' + po.indentId, style: { color: '#3b82f6' } }, poIndentLabel(po, state))
+        ) : React.createElement('div', { style: { gridColumn: '1 / -1', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 12px' } },
+          React.createElement('strong', null, 'Raised without an indent' + (poSiteOf(po, state) ? ' for ' + poSiteOf(po, state).name : '') + '. '),
+          React.createElement('span', null, 'Reason: ' + (po.noIndentReason || 'not given') + '. It needs MD approval whatever its value.'),
+          (canManagePO && po.status !== 'cancelled' && po.status !== 'closed') ? React.createElement('div', { className: 'no-print', style: { marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            React.createElement('select', {
+              value: linkTo, onChange: function(e) { setLinkTo(e.target.value); }, 'aria-label': 'Indent to link',
+              style: { padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, maxWidth: 360 }
+            },
+              React.createElement('option', { value: '' }, 'Link to an approved indent...'),
+              (state.indents || []).filter(function(i) { return i.status === 'approved' || i.status === 'in_procurement'; }).map(function(i) {
+                return React.createElement('option', { key: i.id, value: i.id },
+                  getIndentDisplayId(i, state.indents) + ' — ' + getSiteName(i.siteId, state.sites) + ' — ' + (i.lineItems || []).map(function(l) { return l.description; }).join(', ').slice(0, 50));
+              })
+            ),
+            React.createElement('button', {
+              className: 'btn btn-sm btn-secondary', disabled: !linkTo,
+              onClick: function() {
+                if (!linkTo) return;
+                dispatch({ type: 'LINK_PO_INDENT', payload: { poId: po.id, indentId: linkTo } });
+                dispatch({ type: 'SHOW_TOAST', payload: { message: 'PO linked to the indent', type: 'success' } });
+                setLinkTo('');
+              }
+            }, 'Link')
+          ) : null
+        ),
+        (function() {
+          var t = cleanPOTerms(po.terms);
+          var lines = PO_TERMS.filter(function(x) { return t[x.key]; }).map(function(x) { return x.label + ': ' + t[x.key]; });
+          if (t.siteContact || t.sitePhone) lines.push('Site contact: ' + [t.siteContact, t.sitePhone].filter(Boolean).join(', '));
+          if (t.special) lines.push('Special instructions: ' + t.special);
+          if (po.deliveryAddress) lines.unshift('Deliver to: ' + po.deliveryAddress);
+          return lines.length ? React.createElement('div', { style: { gridColumn: '1 / -1', fontSize: 13, color: '#374151' } },
+            React.createElement('div', { style: { color: '#6b7280', marginBottom: 2 } }, 'Terms'),
+            lines.map(function(l, i) { return React.createElement('div', { key: i }, l); })) : null;
+        })()
       )
     ),
     // What this PO still needs / which approval route applies (procurement, draft only)
@@ -648,7 +636,9 @@ function PODetailScreen(_ref) {
     },
       missing.length
         ? 'Before this PO can be sent or issued it needs: ' + missing.join(', ') + '.'
-        : (needsMD
+        : (!po.indentId
+            ? 'This PO has no indent, so it needs MD approval whatever its value.'
+            : needsMD
             ? 'Value ' + formatRs(poValueForLimit(po, state)) + ' is above the ' + formatRs(mdLimit) + ' limit: MD approval is required.'
             : 'Value ' + formatRs(poValueForLimit(po, state)) + ' is within the ' + formatRs(mdLimit) + ' limit: the procurement manager can issue it directly, or it can be sent to the MD.')
     ) : null,
@@ -659,7 +649,7 @@ function PODetailScreen(_ref) {
     React.createElement('div', { style: { display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' } },
       // Draft: procurement
       canManagePO && po.status === 'draft' && React.createElement('button', { className: 'btn btn-primary', onClick: editing ? cancelEdit : startEdit }, editing ? 'Cancel Edit' : 'Edit PO'),
-      (canManagePO && po.status === 'draft' && !editing && isPOManager && !needsMD) && React.createElement('button', {
+      (canManagePO && po.status === 'draft' && !editing && isPOManager && !needsMD && po.indentId) && React.createElement('button', {
         className: 'btn btn-success',
         onClick: function() {
           if (!readyOrExplain()) return;
@@ -675,7 +665,7 @@ function PODetailScreen(_ref) {
           dispatch({ type: 'SUBMIT_PO_FOR_APPROVAL', payload: { poId: po.id } });
           poToast('PO sent for MD approval');
         }
-      }, needsMD ? 'Send for MD Approval' : 'Send for MD Approval anyway'),
+      }, (needsMD || !po.indentId) ? 'Send for MD Approval' : 'Send for MD Approval anyway'),
       (canManagePO && po.status === 'draft' && !editing) && React.createElement('button', { className: 'btn btn-danger', onClick: function() { openMode('cancel'); } }, 'Cancel PO'),
 
       // With the MD
@@ -770,6 +760,26 @@ function PODetailScreen(_ref) {
           })
         )
       ),
+      React.createElement('div', { style: { marginBottom: '16px' } },
+        React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Delivery Address'),
+        React.createElement('input', {
+          type: 'text', value: editForm.deliveryAddress,
+          onChange: function(e) { var v = e.target.value; setEditForm(function(prev) { return Object.assign({}, prev, { deliveryAddress: v }); }); },
+          style: { width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', boxSizing: 'border-box' }
+        })
+      ),
+      !po.indentId ? React.createElement('div', { style: { marginBottom: '16px' } },
+        React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Why there is no indent *'),
+        React.createElement('textarea', {
+          value: editForm.noIndentReason, rows: 2,
+          onChange: function(e) { var v = e.target.value; setEditForm(function(prev) { return Object.assign({}, prev, { noIndentReason: v }); }); },
+          style: { width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', boxSizing: 'border-box' }
+        })
+      ) : null,
+      React.createElement(POTermsFields, {
+        terms: editForm.terms,
+        setTerms: function(t) { setEditForm(function(prev) { return Object.assign({}, prev, { terms: t }); }); }
+      }),
       React.createElement('div', { style: { marginBottom: '16px' } },
         React.createElement('label', { style: { display: 'block', fontSize: '13px', fontWeight: '500', marginBottom: '4px' } }, 'Declaration if no quotation is available (leave empty when a quotation is attached below)'),
         React.createElement('textarea', {

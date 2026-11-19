@@ -10,6 +10,7 @@ var initialState = {
     vendors: [],
     indents: [],
     purchaseOrders: [],
+    localPurchases: [],
     grns: [],
     notifications: [],
     offices: [],

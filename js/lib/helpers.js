@@ -104,6 +104,8 @@ function getStorePOs(state) {
   return (state.purchaseOrders || []).filter(function(po) {
     // Find the linked indent to check siteId
     var indent = state.indents.find(function(i) { return i.id === po.indentId || i.linkedPO === po.id; });
-    return indent && siteIds.includes(indent.siteId);
+    if (indent) return siteIds.includes(indent.siteId);
+    // A PO raised without an indent names its site itself
+    return !!po.siteId && siteIds.includes(po.siteId);
   });
 }

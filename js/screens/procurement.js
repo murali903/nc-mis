@@ -711,6 +711,8 @@ function CreatePOScreen({ indentId }) {
     const [itemRates, setItemRates] = useState({});
     const [itemGst, setItemGst] = useState({});
     const [quotes, setQuotes] = useState([]);
+    const [poTerms, setPoTerms] = useState({});
+    const [deliveryAddress, setDeliveryAddress] = useState(null);   // null = the site's address
     const [noQuote, setNoQuote] = useState(false);
     const [noQuoteReason, setNoQuoteReason] = useState('');
     const [uploading, setUploading] = useState(false);
@@ -821,7 +823,8 @@ function CreatePOScreen({ indentId }) {
             createdAt: new Date().toISOString(),
             deliveryDate,
             paymentTerms,
-            deliveryAddress: site ? site.name + ', ' + site.location : '',
+            deliveryAddress: deliveryAddress !== null ? deliveryAddress : (site ? site.name + ', ' + site.location : ''),
+            terms: cleanPOTerms(poTerms),
             notes: remarks.trim(),
             noQuoteReason: noQuote ? noQuoteReason.trim() : '',
             status: 'draft',
@@ -1034,9 +1037,11 @@ function CreatePOScreen({ indentId }) {
             // Delivery address
             React.createElement('div', { className: 'form-group' },
                 React.createElement('label', { className: 'form-label' }, 'Delivery Address'),
-                React.createElement('div', {
-                    style: { padding: '8px 12px', backgroundColor: '#f1f5f9', borderRadius: '6px', border: '1px solid #e2e8f0', fontSize: '13px' }
-                }, site ? site.name + ', ' + site.location : '-')
+                React.createElement('input', {
+                    type: 'text', className: 'form-input',
+                    value: deliveryAddress !== null ? deliveryAddress : (site ? site.name + ', ' + site.location : ''),
+                    onChange: (e) => setDeliveryAddress(e.target.value)
+                })
             ),
 
             // Items table with GST
@@ -1121,6 +1126,8 @@ function CreatePOScreen({ indentId }) {
                     style: { minHeight: '80px' }
                 })
             ),
+
+            React.createElement(POTermsFields, { terms: poTerms, setTerms: setPoTerms }),
 
             // Quotations
             React.createElement(AttachmentPicker, {
@@ -1209,60 +1216,19 @@ function ProcurementPOsScreen() {
     };
 
     const handlePrintPO = (po) => {
-        const vendor = state.vendors.find(v => v.id === po.vendorId);
-        const printContent = [
-            '<html><head><title>Purchase Order - ' + getPODisplayId(po) + '</title>',
-            '<style>',
-            'body { font-family: Arial, sans-serif; padding: 40px; color: #333; }',
-            'h1 { font-size: 24px; border-bottom: 2px solid #333; padding-bottom: 10px; }',
-            '.info-row { display: flex; justify-content: space-between; margin: 8px 0; }',
-            '.info-label { font-weight: bold; }',
-            'table { width: 100%; border-collapse: collapse; margin: 20px 0; }',
-            'th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }',
-            'th { background: #f0f0f0; }',
-            '.total-row { font-weight: bold; background: #f9f9f9; }',
-            '@media print { body { padding: 20px; } }',
-            '</style></head><body>',
-            '<h1>PURCHASE ORDER</h1>',
-            '<div class="info-row"><span class="info-label">PO Number:</span><span>' + getPODisplayId(po) + '</span></div>',
-            '<div class="info-row"><span class="info-label">Date:</span><span>' + new Date(po.createdAt).toLocaleDateString() + '</span></div>',
-            '<div class="info-row"><span class="info-label">Vendor:</span><span>' + po.vendorName + '</span></div>',
-            vendor ? '<div class="info-row"><span class="info-label">Vendor GSTIN:</span><span>' + (vendor.gstin || 'N/A') + '</span></div>' : '',
-            '<div class="info-row"><span class="info-label">Delivery Address:</span><span>' + (po.deliveryAddress || 'N/A') + '</span></div>',
-            po.deliveryDate ? '<div class="info-row"><span class="info-label">Delivery Date:</span><span>' + po.deliveryDate + '</span></div>' : '',
-            po.paymentTerms ? '<div class="info-row"><span class="info-label">Payment Terms:</span><span>' + po.paymentTerms + '</span></div>' : '',
-            '<table>',
-            '<thead><tr><th>Material</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Amount</th><th>GST%</th><th>GST Amt</th><th>Total</th></tr></thead>',
-            '<tbody>',
-            (po.lineItems || []).map(item =>
-                '<tr><td>' + item.description + '</td><td>' + item.qty + '</td><td>' + item.unit + '</td>' +
-                '<td>Rs. ' + (item.rate || 0).toLocaleString() + '</td>' +
-                '<td>Rs. ' + (item.amount || 0).toLocaleString() + '</td>' +
-                '<td>' + (item.gstPercent || 0) + '%</td>' +
-                '<td>Rs. ' + (item.gstAmount || 0).toLocaleString() + '</td>' +
-                '<td>Rs. ' + (item.amountWithGst || item.amount || 0).toLocaleString() + '</td></tr>'
-            ).join(''),
-            '<tr class="total-row"><td colspan="7" style="text-align:right">Grand Total:</td><td>Rs. ' + (po.totalAmount || 0).toLocaleString() + '</td></tr>',
-            '</tbody></table>',
-            po.notes ? '<p><strong>Remarks:</strong> ' + escapeHtml(po.notes) + '</p>' : '',
-            '</body></html>'
-        ].join('');
-
-        const printWindow = window.open('', '_blank');
-        if (!printWindow) {
+        if (!printPurchaseOrder(po, state)) {
             dispatch({ type: 'SHOW_TOAST', payload: { message: 'The browser blocked the print window. Allow pop-ups for this site and try again.', type: 'error' } });
-            return;
         }
-        printWindow.document.write(printContent);
-        printWindow.document.close();
-        printWindow.focus();
-        printWindow.print();
     };
 
     return React.createElement('div', { className: 'card' },
         React.createElement('div', { className: 'card-header' },
             React.createElement('div', { className: 'card-title' }, 'Purchase Orders'),
             React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                canManage ? React.createElement('a', {
+                    href: '#create-po-direct', className: 'btn btn-secondary', style: { textDecoration: 'none', fontSize: 13 },
+                    title: 'For an order with no indent behind it. Always needs MD approval.'
+                }, '+ PO without indent') : null,
                 React.createElement('select', {
                     value: statusFilter,
                     onChange: function(e) { setStatusFilter(e.target.value); },
@@ -1299,7 +1265,9 @@ function ProcurementPOsScreen() {
                             React.createElement('td', { style: { fontWeight: '600' } }, React.createElement('a', { href: '#po/' + po.id, style: { color: '#3b82f6', textDecoration: 'none' } }, getPODisplayId(po))),
                             React.createElement('td', null, po.vendorName),
                             React.createElement('td', null,
-                                React.createElement('a', { href: '#indent/' + po.indentId, style: { textDecoration: 'none', color: '#2563eb' } }, getIndentDisplayId((state.indents || []).find(function(i) { return i.id === po.indentId; }) || { id: po.indentId }, state.indents))
+                                po.indentId
+                                    ? React.createElement('a', { href: '#indent/' + po.indentId, style: { textDecoration: 'none', color: '#2563eb' } }, poIndentLabel(po, state))
+                                    : React.createElement('span', { style: { color: '#b45309', fontSize: 12, fontWeight: 600 } }, 'No indent')
                             ),
                             React.createElement('td', null, (po.lineItems || []).length),
                             React.createElement('td', { style: { fontWeight: '600' } }, 'Rs. ' + (po.totalAmount || 0).toLocaleString()),
@@ -1308,7 +1276,7 @@ function ProcurementPOsScreen() {
                             React.createElement('td', null,
                                 React.createElement('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap' } },
                                     // Draft within the limit: the manager may issue it directly
-                                    (po.status === 'draft' && isManager && !poNeedsMD(po, state)) && React.createElement('button', {
+                                    (canManage && po.status === 'draft' && isManager && po.indentId && !poNeedsMD(po, state)) && React.createElement('button', {
                                         className: 'btn btn-sm btn-success',
                                         onClick: function() { sendOrIssue(po, true); }
                                     }, 'Issue to Vendor'),
@@ -1320,7 +1288,7 @@ function ProcurementPOsScreen() {
                                         className: 'btn btn-sm btn-success',
                                         onClick: function() { sendOrIssue(po, true); }
                                     }, 'Issue to Vendor'),
-                                    (po.status === 'issued' || po.status === 'partially_fulfilled')
+                                    (po.status !== 'draft' && po.status !== 'cancelled')
                                         ? React.createElement('button', {
                                             className: 'btn btn-sm btn-primary',
                                             onClick: () => handlePrintPO(po),

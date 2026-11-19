@@ -49,6 +49,7 @@ same function and gets the same checks.
 | `js/lib/helpers.js` | Small shared helpers (names, numbers, printing a GRN). |
 | `js/components/shell.js` | Login page, top bar with notifications, side menu, shared widgets. |
 | `js/components/list-controls.js` | Search + sort bar used on every list, the unit list, file attachments, and the PO approval-limit helpers. |
+| `js/components/po-format.js` | PO terms (dropdowns), the printed purchase order on the company letterhead, amount in words. |
 | `js/screens/*.js` | One file per area: admin, engineer, project manager, procurement, MD, store, reports, indent and PO detail pages. |
 | `js/app.js` | Routing, the save queue, realtime refresh, app start-up. |
 | `supabase/migrations/` | Every database change, in the order it was applied. |
@@ -79,6 +80,12 @@ vendors, site assignments, settings). `indent_flow` holds this module's data.
   the total of all live POs on the same indent). At or below it the procurement
   manager may issue directly; the MD is notified.
 - Closing a PO needs remarks and is done by the procurement manager.
+- A PO raised without an indent needs a reason and a site, always needs MD
+  approval, and can be linked to an approved indent later.
+- A local purchase (bought at site without an indent, recorded afterwards with
+  the bill) is recorded by a storekeeper or the procurement manager, up to the
+  limit in Organisation Settings (`local_purchase_limit`, Rs. 10,000 to start
+  with), approved by the site's project manager, and notified to the MD.
 - A receipt (against an indent or a PO) needs a photo or remarks.
 
 ## Files attached to indents
@@ -105,4 +112,6 @@ They are opened through short-lived signed links.
   straight to their tables (protected by row-level security and the guards),
   not through functions.
 - A deactivated user can still sign in and read data; they cannot write.
-- No automated tests yet; flows are tested by hand on the dev address.
+- One automated check so far: `node tests/smoke/test.js` draws every screen as
+  every role and presses every button, looking for crashes. Rule tests are still
+  run by hand on the dev address.

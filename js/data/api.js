@@ -13,6 +13,9 @@ async function loadAllData(userId) {
         supabaseClient.schema('indent_flow').from('grns').select('*, grn_items(*)'),
         supabaseClient.schema('indent_flow').from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50),
         supabaseClient.schema('core').from('org_settings').select('*'),
+        supabaseClient.schema('indent_flow').from('local_purchases').select('*, local_purchase_items(*)').order('created_at', { ascending: false }),
+        // Files on purchase orders that have no indent (others arrive with their indent)
+        supabaseClient.schema('indent_flow').from('indent_documents').select('*').is('indent_id', null),
     ]);
 
     var profilesRes = results[0];
@@ -26,10 +29,12 @@ async function loadAllData(userId) {
     var grnsRes = results[8];
     var notifsRes = results[9];
     var settingsRes = results[10];
+    var localRes = results[11];
+    var poDocsRes = results[12];
 
     // Log any errors
-    var allRes = [profilesRes, officesRes, sitesRes, assignmentsRes, vendorsRes, boqRes, indentsRes, posRes, grnsRes, notifsRes, settingsRes];
-    var tableNames = ['profiles', 'offices', 'sites', 'site_assignments', 'vendors', 'boq_lists', 'indents', 'purchase_orders', 'grns', 'notifications', 'org_settings'];
+    var allRes = [profilesRes, officesRes, sitesRes, assignmentsRes, vendorsRes, boqRes, indentsRes, posRes, grnsRes, notifsRes, settingsRes, localRes, poDocsRes];
+    var tableNames = ['profiles', 'offices', 'sites', 'site_assignments', 'vendors', 'boq_lists', 'indents', 'purchase_orders', 'grns', 'notifications', 'org_settings', 'local_purchases', 'po documents'];
     for (var ri = 0; ri < allRes.length; ri++) {
         if (allRes[ri].error) {
             console.error('[NC_MIS] Error loading ' + tableNames[ri] + ':', allRes[ri].error.message);
@@ -44,7 +49,14 @@ async function loadAllData(userId) {
         vendors: (vendorsRes.data || []).map(transformVendor),
         boqLists: transformBoqLists(boqRes.data || []),
         indents: (indentsRes.data || []).map(transformIndent),
-        purchaseOrders: (posRes.data || []).map(transformPO),
+        purchaseOrders: (posRes.data || []).map(transformPO).map(function(po) {
+            // A PO without an indent carries its own files
+            if (!po.indentId) {
+                po.documents = (poDocsRes.data || []).filter(function(d) { return d.po_id === po.id; }).map(transformDocument);
+            }
+            return po;
+        }),
+        localPurchases: (localRes.data || []).map(transformLocalPurchase),
         grns: (grnsRes.data || []).map(transformGRN),
         notifications: (notifsRes.data || []).map(function(n) {
             return {

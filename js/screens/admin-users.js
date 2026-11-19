@@ -666,6 +666,9 @@ function OrgSettingsScreen() {
     companyPhone: settings.companyPhone || '',
     companyPAN: settings.companyPAN || '',
     poMdApprovalThreshold: String(poApprovalLimit(state)),
+    localPurchaseLimit: String(localPurchaseLimit(state)),
+    companyTagline: settings.companyTagline || '',
+    companyWebsite: settings.companyWebsite || '',
   });
   var form = _form[0];
   var setForm = _form[1];
@@ -685,7 +688,12 @@ function OrgSettingsScreen() {
       dispatch({ type: 'SHOW_TOAST', payload: { message: 'Enter the PO value above which MD approval is required (a number, 0 or more)', type: 'error' } });
       return;
     }
-    dispatch({ type: 'UPDATE_ORG_SETTINGS', payload: Object.assign({}, form, { poMdApprovalThreshold: String(Number(limitText)) }) });
+    var lpText = String(form.localPurchaseLimit || '').trim();
+    if (lpText === '' || isNaN(Number(lpText)) || Number(lpText) < 0) {
+      dispatch({ type: 'SHOW_TOAST', payload: { message: 'Enter the most a single local purchase can be (a number, 0 or more)', type: 'error' } });
+      return;
+    }
+    dispatch({ type: 'UPDATE_ORG_SETTINGS', payload: Object.assign({}, form, { poMdApprovalThreshold: String(Number(limitText)), localPurchaseLimit: String(Number(lpText)) }) });
     dispatch({ type: 'SHOW_TOAST', payload: { message: 'Organisation settings saved', type: 'success' } });
     setSaved(true);
   };
@@ -697,6 +705,10 @@ function OrgSettingsScreen() {
     { key: 'companyGSTIN', label: 'Company GSTIN', type: 'text' },
     { key: 'companyPhone', label: 'Company Phone', type: 'tel' },
     { key: 'companyPAN', label: 'Company PAN', type: 'text' },
+    { key: 'companyTagline', label: 'Line under the company name on printed documents', type: 'text' },
+    { key: 'companyWebsite', label: 'Website', type: 'text' },
+    { key: 'localPurchaseLimit', label: 'Most a single local purchase can be (Rs., including GST)', type: 'number',
+      help: 'Material bought at site without an indent and recorded afterwards. Above this, an indent is required.' },
     { key: 'poMdApprovalThreshold', label: 'PO value above which MD approval is required (Rs., including GST)', type: 'number',
       help: 'A PO at or below this value can be issued by the procurement manager without MD approval. Above it, MD approval is compulsory. Enter 0 to send every PO to the MD.' },
   ];

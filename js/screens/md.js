@@ -151,17 +151,18 @@ function MDPOApprovalsScreen() {
                         React.createElement('div', null,
                             React.createElement('a', { href: '#po/' + po.id, style: { fontSize: '16px', fontWeight: '600', color: '#2563eb', textDecoration: 'none' } }, getPODisplayId(po)),
                             React.createElement('div', { style: { fontSize: '13px', color: '#64748b', marginTop: '4px' } },
-                                'Indent: ',
-                                React.createElement('a', { href: '#indent/' + po.indentId, style: { color: '#2563eb' } }, getIndentDisplayId((state.indents || []).find(function(i) { return i.id === po.indentId; }) || { id: po.indentId }, state.indents)),
+                                po.indentId ? 'Indent: ' : 'No indent',
+                                po.indentId ? React.createElement('a', { href: '#indent/' + po.indentId, style: { color: '#2563eb' } }, poIndentLabel(po, state)) : null,
                                 ' | Vendor: ' + po.vendorName,
                                 po.paymentTerms ? ' | Terms: ' + po.paymentTerms : '',
                                 po.deliveryDate ? ' | Delivery: ' + new Date(po.deliveryDate).toLocaleDateString('en-IN') : '',
                                 ' | Raised by: ' + getUserName(po.createdBy, state.users)
                             ),
+                            !po.indentId ? React.createElement('div', { style: { fontSize: '13px', color: '#b45309', marginTop: '4px', fontWeight: 600 } },
+                                'Raised without an indent' + (poSiteOf(po, state) ? ' for ' + poSiteOf(po, state).name : '') + ': ' + (po.noIndentReason || 'no reason given')) : null,
                             po.notes ? React.createElement('div', { style: { fontSize: '13px', color: '#334155', marginTop: '4px' } }, 'Procurement remarks: ' + po.notes) : null,
                             (function() {
-                                var poIndent = (state.indents || []).find(function(i) { return i.id === po.indentId; });
-                                var quotes = poIndent ? (poIndent.documents || []).filter(function(d) { return d.poId === po.id; }) : [];
+                                var quotes = poQuoteDocs(po, state);
                                 return React.createElement('div', { style: { fontSize: '13px', marginTop: '4px', color: quotes.length ? '#334155' : '#b45309' } },
                                     quotes.length === 0
                                         ? (po.noQuoteReason ? 'No quotation — procurement declares: ' + po.noQuoteReason : 'No quotation attached')

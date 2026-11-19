@@ -7,6 +7,7 @@ var WORKFLOW_ACTIONS = {
     CREATE_PO: 1, UPDATE_PO: 1, SUBMIT_PO_FOR_APPROVAL: 1, REQUEST_MD_PO_APPROVAL: 1,
     MD_APPROVE_PO: 1, APPROVE_PO: 1, MD_REJECT_PO: 1, REJECT_PO: 1, ISSUE_PO: 1, FINALIZE_PO: 1,
     AMEND_PO: 1, CLOSE_PO: 1, CANCEL_PO: 1, ADD_DOCUMENT: 1, DELETE_DOCUMENT: 1,
+    RECORD_LOCAL_PURCHASE: 1, DECIDE_LOCAL_PURCHASE: 1, LINK_PO_INDENT: 1,
 };
 
 // Row for indent_flow.indent_documents from a document object
@@ -72,6 +73,8 @@ async function supabaseSync(action, state, postState) {
                             received: 0,
                             is_boq: li.isBoqItem !== false && li.isBoq !== false,
                             non_boq_reason: li.nonBoqReason || null,
+                            remarks: li.remarks || null,
+                            boq_reference: li.boqReference || null,
                         };
                     });
                     var liRes = await supabaseClient.schema('indent_flow').from('indent_line_items').insert(liRows);
@@ -158,6 +161,8 @@ async function supabaseSync(action, state, postState) {
                             received: 0,
                             is_boq: li.isBoqItem !== false && li.isBoq !== false,
                             non_boq_reason: li.nonBoqReason || null,
+                            remarks: li.remarks || null,
+                            boq_reference: li.boqReference || null,
                         };
                     });
                     sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items').insert(revLiRows), 'insert revised line items');
@@ -191,12 +196,14 @@ async function supabaseSync(action, state, postState) {
                 sbCheck(await supabaseClient.schema('indent_flow').from('indent_documents').insert(
                     documentRow(doc, action.payload.indentId, state.currentUserId)), 'add document');
 
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: action.payload.indentId,
-                    action: 'Document Uploaded',
-                    user_id: state.currentUserId,
-                    note: doc.name + ' (' + (doc.category || 'general') + ')',
-                }), 'doc upload activity');
+if (action.payload.indentId) {
+                                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                        indent_id: action.payload.indentId,
+                        action: 'Document Uploaded',
+                        user_id: state.currentUserId,
+                        note: doc.name + ' (' + (doc.category || 'general') + ')',
+                    }), 'doc upload activity');
+                }
                 break;
             }
 
@@ -208,12 +215,14 @@ async function supabaseSync(action, state, postState) {
                     throw new Error('You are not allowed to remove this file (only the person who attached it can)');
                 }
 
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: action.payload.indentId,
-                    action: 'Document Removed',
-                    user_id: state.currentUserId,
-                    note: action.payload.documentName || '',
-                }), 'doc delete activity');
+if (action.payload.indentId) {
+                                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                        indent_id: action.payload.indentId,
+                        action: 'Document Removed',
+                        user_id: state.currentUserId,
+                        note: action.payload.documentName || '',
+                    }), 'doc delete activity');
+                }
                 break;
             }
 
@@ -222,7 +231,10 @@ async function supabaseSync(action, state, postState) {
                 var poRow = {
                     id: po.id,
                     po_number: po.poNumber || ('PO-' + po.id.slice(0, 8).toUpperCase()),
-                    indent_id: action.payload.indentId,
+                    indent_id: action.payload.indentId || null,
+                    site_id: action.payload.indentId ? null : (po.siteId || null),
+                    no_indent_reason: action.payload.indentId ? null : (po.noIndentReason || null),
+                    terms: po.terms || {},
                     vendor_id: po.vendorId,
                     status: 'draft',   // submission is done by indent_flow.po_submit
                     created_by: state.currentUserId,
@@ -256,19 +268,21 @@ async function supabaseSync(action, state, postState) {
                 // Quotations chosen on the create screen (already uploaded to storage)
                 if (po.documents && po.documents.length > 0) {
                     sbCheck(await supabaseClient.schema('indent_flow').from('indent_documents').insert(
-                        po.documents.map(function(d) { return documentRow(d, action.payload.indentId, state.currentUserId); })
+                        po.documents.map(function(d) { return documentRow(d, action.payload.indentId || null, state.currentUserId); })
                     ), 'save quotations');
                 }
 
                 // The indent is linked to the PO and moved to "PO draft" by the database
                 // (trigger on purchase_orders), not from here.
 
-                sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
-                    indent_id: action.payload.indentId,
-                    action: 'PO Created',
-                    user_id: state.currentUserId,
-                    note: 'PO ' + (po.poNumber || po.id) + ' created',
-                }), 'PO create activity');
+                if (action.payload.indentId) {
+                    sbCheck(await supabaseClient.schema('indent_flow').from('indent_activity').insert({
+                        indent_id: action.payload.indentId,
+                        action: 'PO Created',
+                        user_id: state.currentUserId,
+                        note: 'PO ' + (po.poNumber || po.id) + ' created',
+                    }), 'PO create activity');
+                }
                 break;
             }
 
@@ -284,6 +298,9 @@ async function supabaseSync(action, state, postState) {
                 if (updates.totalAmount !== undefined) dbUpdates.total_amount = updates.totalAmount || 0;
                 if (updates.remarks !== undefined) dbUpdates.remarks = updates.remarks;
                 if (updates.noQuoteReason !== undefined) dbUpdates.no_quote_reason = updates.noQuoteReason || null;
+                if (updates.terms !== undefined) dbUpdates.terms = updates.terms || {};
+                if (updates.noIndentReason !== undefined) dbUpdates.no_indent_reason = updates.noIndentReason || null;
+                if (updates.siteId !== undefined) dbUpdates.site_id = updates.siteId || null;
                 // The reducer bumps the version on every edit; persist it (state is pre-reducer)
                 var _updPo = (state.purchaseOrders || []).find(function(p) { return p.id === action.payload.poId; });
                 if (_updPo) dbUpdates.version = (_updPo.version || 1) + 1;
@@ -336,6 +353,48 @@ async function supabaseSync(action, state, postState) {
             case 'ISSUE_PO':
             case 'FINALIZE_PO': {
                 await callFlow('po_issue', { p_po_id: action.payload.poId });
+                break;
+            }
+
+            case 'LINK_PO_INDENT': {
+                await callFlow('po_link_indent', { p_po_id: action.payload.poId, p_indent_id: action.payload.indentId });
+                break;
+            }
+
+            // Local / emergency purchase: one database function checks and saves it
+            case 'RECORD_LOCAL_PURCHASE': {
+                var lp = action.payload;
+                await callFlow('local_purchase_record', { p: {
+                    site_id: lp.siteId,
+                    vendor_id: lp.vendorId || null,
+                    vendor_name: lp.vendorName || '',
+                    vendor_phone: lp.vendorPhone || '',
+                    vendor_gstin: lp.vendorGstin || '',
+                    vendor_address: lp.vendorAddress || '',
+                    bill_number: lp.billNumber || '',
+                    bill_date: lp.billDate || null,
+                    reason: lp.reason || '',
+                    payment_mode: lp.paymentMode || '',
+                    bill_files: lp.billFiles || [],
+                    items: (lp.items || []).map(function(it) {
+                        return {
+                            description: it.description || '',
+                            quantity: parseFloat(it.quantity) || 0,
+                            unit: it.unit || '',
+                            rate: parseFloat(it.rate) || 0,
+                            gst_percent: parseFloat(it.gstPercent) || 0,
+                        };
+                    }),
+                } });
+                break;
+            }
+
+            case 'DECIDE_LOCAL_PURCHASE': {
+                await callFlow('local_purchase_decide', {
+                    p_id: action.payload.id,
+                    p_approve: !!action.payload.approve,
+                    p_remarks: action.payload.remarks || '',
+                });
                 break;
             }
 
@@ -431,6 +490,8 @@ async function supabaseSync(action, state, postState) {
                             qty: li.qty,
                             unit: li.unit,
                             received: 0,
+                            remarks: li.remarks || null,
+                            boq_reference: li.boqReference || null,
                         };
                     });
                     sbCheck(await supabaseClient.schema('indent_flow').from('indent_line_items').insert(draftLiRows), 'insert draft line items');
